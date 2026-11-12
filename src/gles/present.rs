@@ -160,6 +160,7 @@ struct PresentSharpenProgram {
 /// the guest, Core Animation compositor or Android's private shader context.
 #[derive(Default)]
 pub struct PresentState {
+    quad_vbo: u32,
     program: Option<PresentSharpenProgram>,
     shader_failed: bool,
     fsr_target: Option<PresentFsrTarget>,
@@ -177,6 +178,7 @@ impl PresentState {
     /// The owning GL context must be current. Do not call this from Drop:
     /// destruction of a Rust handle does not imply its GL context is current.
     pub(crate) unsafe fn release(&mut self, gles: &mut dyn GLES) {
+        if self.quad_vbo != 0 { gles.DeleteBuffers(1,&self.quad_vbo); self.quad_vbo=0; }
         for target in [self.fsr_target.take(), self.post_target.take()].into_iter().flatten() {
             gles.DeleteFramebuffersOES(1, &target.framebuffer);
             gles.DeleteTextures(1, &target.texture);
@@ -627,36 +629,29 @@ pub(crate) unsafe fn draw_present_sharpen_quad(
         gles.Uniform1f(p.u_black_threshold, black_floor.map_or(1.0, |value| value.threshold));
     }
 
-    let vertices: [f32; 12] = [
-        -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0,
+    let mut old_array=0;
+    gles.GetIntegerv(gles2::ARRAY_BUFFER_BINDING,&mut old_array);
+    let saved=[
+        super::present_attrib::SavedAttrib::capture(gles,p.a_pos as u32),
+        super::present_attrib::SavedAttrib::capture(gles,p.a_uv as u32),
     ];
-    let tex_coords: [f32; 12] = [
-        0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
-    ];
-    // Client-side arrays, exactly like the fixed-function quad: present_frame
-    // binds ARRAY_BUFFER 0 before it draws.
-    gles.BindBuffer(gles11::ARRAY_BUFFER, 0);
+    if state.quad_vbo == 0 {
+        let vertices:[f32;24]=[
+            -1.,-1.,0.,0., -1.,1.,0.,1., 1.,-1.,1.,0.,
+            1.,-1.,1.,0., -1.,1.,0.,1., 1.,1.,1.,1.,
+        ];
+        gles.GenBuffers(1,&mut state.quad_vbo);
+        gles.BindBuffer(gles2::ARRAY_BUFFER,state.quad_vbo);
+        gles.BufferData(gles2::ARRAY_BUFFER,std::mem::size_of_val(&vertices) as isize,
+            vertices.as_ptr().cast(),gles2::STATIC_DRAW);
+    } else { gles.BindBuffer(gles2::ARRAY_BUFFER,state.quad_vbo); }
     gles.EnableVertexAttribArray(p.a_pos as u32);
-    gles.VertexAttribPointer(
-        p.a_pos as u32,
-        2,
-        gles2::FLOAT,
-        gles2::FALSE,
-        0,
-        vertices.as_ptr() as *const _,
-    );
     gles.EnableVertexAttribArray(p.a_uv as u32);
-    gles.VertexAttribPointer(
-        p.a_uv as u32,
-        2,
-        gles2::FLOAT,
-        gles2::FALSE,
-        0,
-        tex_coords.as_ptr() as *const _,
-    );
-    gles.DrawArrays(gles2::TRIANGLES, 0, 6);
-    gles.DisableVertexAttribArray(p.a_pos as u32);
-    gles.DisableVertexAttribArray(p.a_uv as u32);
+    gles.VertexAttribPointer(p.a_pos as u32,2,gles2::FLOAT,gles2::FALSE,16,std::ptr::null());
+    gles.VertexAttribPointer(p.a_uv as u32,2,gles2::FLOAT,gles2::FALSE,16,8usize as *const _);
+    gles.DrawArrays(gles2::TRIANGLES,0,6);
+    for value in saved { value.restore(gles); }
+    gles.BindBuffer(gles2::ARRAY_BUFFER,old_array as u32);
     #[cfg(target_os = "android")]
     let verified = verify_present_uniforms(gles, state, p, source_size, amount, fsr, aa, shadow, black_floor);
     #[cfg(not(target_os = "android"))]
@@ -720,7 +715,7 @@ unsafe fn verify_present_uniforms(
     let locations = [p.u_aa, p.u_sharpen, p.u_fsr, p.u_shadow, p.u_black_floor, p.u_black_threshold];
     let requested = [aa, sharpen, fsr, shadow,
         black_floor.map_or(0.0, |value| value.floor),
-        black_floor.map_or(0.0, |value| value.threshold)];
+        black_floor.map_or(1.0, |value| value.threshold)];
     let mut actual = [f32::NAN; 6];
     for (location, actual) in locations.into_iter().zip(actual.iter_mut()) {
         if location >= 0 { gles.GetUniformfv(p.program, location, actual); }
@@ -732,7 +727,7 @@ unsafe fn verify_present_uniforms(
     log!("[DSpresent verify] program={} current={} source={}x{} aa_requested={} aa_read={} sharpen_requested={} sharpen_read={} fsr_requested={} fsr_read={} shadow_requested={} shadow_read={} black_floor_requested={} black_floor_read={} black_threshold_requested={} black_threshold_read={} pending_error=0x{:x} query_error=0x{:x} passed={}",
         p.program,current,source.0,source.1,aa,actual[0],sharpen,actual[1],fsr,actual[2],shadow,actual[3],
         black_floor.map_or(0.0, |value| value.floor),actual[4],
-        black_floor.map_or(0.0, |value| value.threshold),actual[5],pending_error,query_error,passed);
+        black_floor.map_or(1.0, |value| value.threshold),actual[5],pending_error,query_error,passed);
     state.uniform_verification_failed = !passed;
     passed
 }
@@ -948,7 +943,7 @@ pub(crate) unsafe fn draw_present_processed_quad(
 /// dump this includes the present-layer image processing. Set
 /// `TOUCHHLE_DS_PRESENT_CAPTURE_AT` (default 600) chooses the frame number, or
 /// `TOUCHHLE_DS_PRESENT_CAPTURE_AFTER_MS` chooses a wall-clock delay instead.
-unsafe fn maybe_capture_present_backbuffer(
+pub(crate) unsafe fn maybe_capture_present_backbuffer(
     gles: &mut dyn GLES,
     viewport: (u32, u32, u32, u32),
 ) {
@@ -1226,4 +1221,14 @@ pub unsafe fn present_frame(
     }
     maybe_capture_present_backbuffer(gles, viewport);
     sharpened
+}
+
+/// Explicit audit only: separate incoming guest errors from host-present stages.
+pub(crate) unsafe fn verify_es2_boundary(gles:&mut dyn GLES,phase:&str) {
+    use std::sync::{OnceLock,atomic::{AtomicU32,Ordering}};
+    static ENABLED:OnceLock<bool>=OnceLock::new();
+    if !*ENABLED.get_or_init(||std::env::var("TOUCHHLE_DS_PRESENT_VERIFY").as_deref()==Ok("1")) {return;}
+    static COUNT:AtomicU32=AtomicU32::new(0);
+    let ordinal=COUNT.fetch_add(1,Ordering::Relaxed);
+    if ordinal<64 {let error=gles.GetError();log!("[DSpresent-boundary] n={} phase={} error=0x{:x}",ordinal,phase,error);}
 }

@@ -21,7 +21,7 @@ def touchHleScaleHack = (project.findProperty('touchHleScaleHack') ?: '2').toStr
 def touchHleBundledTextures = (project.findProperty('touchHleBundledTextures') ?: 'false').toBoolean()
 def touchHleTextureScale = (project.findProperty('touchHleTextureScale') ?: '0').toString().toInteger()
 def touchHleSaveLab = (project.findProperty('touchHleSaveLab') ?: 'false').toBoolean()
-def touchHleReleaseTag = (project.findProperty('touchHleReleaseTag') ?: '20261112-r3').toString()
+def touchHleReleaseTag = (project.findProperty('touchHleReleaseTag') ?: '20261112-r4').toString()
 if (touchHleReleaseTag && !(touchHleReleaseTag ==~ /[A-Za-z0-9.-]{1,40}/)) {
     throw new GradleException('Invalid release tag')
 }

@@ -76,6 +76,7 @@ pub mod gles3_native;
 pub mod gles3_on_gl3;
 mod gles_generic;
 pub mod present;
+pub(crate) mod present_attrib;
 mod present_effects;
 pub(crate) mod ds_color_probe;
 pub(crate) mod util;

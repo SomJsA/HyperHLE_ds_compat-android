@@ -23,7 +23,7 @@ final class GithubUpdates {
     static final String REPOSITORY="SomJsA/HyperHLE_ds_compat-android";
     static final String PROJECT_URL="https://github.com/"+REPOSITORY;
     static final String API_URL="https://api.github.com/repos/"+REPOSITORY+"/releases/latest";
-    static final String CURRENT="20261112-r3";
+    static final String CURRENT="20261112-r4";
     static final class Result { final String state,tag; Result(String s,String t){state=s;tag=t;} }
     private static final ArrayList<Binding> bindings=new ArrayList<>();
     private static boolean started,checking;
