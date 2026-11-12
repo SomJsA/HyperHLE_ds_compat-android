@@ -30,6 +30,7 @@ pub struct State {
     #[cfg(target_os = "android")]
     pub(crate) ds_chapter: crate::ds_chapter_overlay::State,
     pub(crate) ds_game_clock: crate::ds_game_clock::State,
+    pub(crate) ds_shader_projection: crate::ds_shader_projection::State,
     #[cfg(target_os = "android")]
     pub(crate) ds_skin_math: crate::ds_skin_math::State,
     #[cfg(target_os = "android")]

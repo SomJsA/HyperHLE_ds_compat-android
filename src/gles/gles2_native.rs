@@ -422,6 +422,20 @@ mod tests {
     }
 }
 
+/// Match the accepted GLES1 Android depth repair on the independent GLES2 path.
+/// ES3 supports D24 in core; ES2 needs the advertised OES capability. Unknown
+/// formats, other apps/platforms and an explicit flag=0 keep original storage.
+unsafe fn ds_depth24_requested(core_es3: bool, target: GLenum, format: GLenum, width: GLsizei, height: GLsizei) -> bool {
+    cfg!(target_os = "android") && target == gles2::RENDERBUFFER && format == 0x81a5
+        && width > 0 && height > 0
+        && std::env::var("TOUCHHLE_DS_NATIVE_DEPTH24").as_deref() == Ok("1")
+        && (core_es3 || {
+            let extensions = gles2::GetString(gles2::EXTENSIONS);
+            !extensions.is_null() && CStr::from_ptr(extensions.cast()).to_string_lossy()
+                .split_whitespace().any(|extension| extension == "GL_OES_depth24")
+        })
+}
+
 pub struct GLES2Native<'gl_ctx> {
     core_msaa:Option<CoreMsaa>,
     _gl_lifetime: PhantomData<&'gl_ctx ()>,
@@ -967,12 +981,19 @@ impl GLES for GLES2Native<'_> {
         gles2::BindRenderbuffer(target, renderbuffer)
     }
     unsafe fn RenderbufferStorage(
-        &mut self,
-        target: GLenum,
-        internalformat: GLenum,
-        width: GLsizei,
-        height: GLsizei,
+        &mut self, target: GLenum, internalformat: GLenum, width: GLsizei, height: GLsizei,
     ) {
+        let promote = ds_depth24_requested(self.core_msaa.is_some(), target, internalformat, width, height);
+        if promote {
+            gles2::RenderbufferStorage(target, 0x81a6, width, height);
+            let mut bits = 0;
+            gles2::GetRenderbufferParameteriv(target, 0x8d54, &mut bits);
+            if bits >= 24 {
+                log!("[DSnativeDepth ES2] guest D16 promoted to D24: {}x{} actual_bits={}", width, height, bits);
+                return;
+            }
+            log!("[DSnativeDepth ES2] D24 unavailable (bits={}); retaining guest D16", bits);
+        }
         gles2::RenderbufferStorage(target, internalformat, width, height)
     }
     // GL_APPLE_framebuffer_multisample
@@ -995,22 +1016,27 @@ impl GLES for GLES2Native<'_> {
         width: GLsizei,
         height: GLsizei,
     ) {
-        if let Some(core)=self.core_msaa {
-            (core.storage)(target,samples,internalformat,width,height);
-        } else if gles2::RenderbufferStorageMultisampleAPPLE::is_loaded() {
-            gles2::RenderbufferStorageMultisampleAPPLE(
-                target,
-                samples,
-                internalformat,
-                width,
-                height,
-            )
-        } else {
-            log_once!(
-                "RenderbufferStorageMultisampleAPPLE: host ES 2.0 driver lacks \
-                 GL_APPLE_framebuffer_multisample; using single-sample storage"
-            );
-            gles2::RenderbufferStorage(target, internalformat, width, height)
+        let promote = ds_depth24_requested(self.core_msaa.is_some(), target, internalformat, width, height);
+        let allocate = |format| {
+            if let Some(core) = self.core_msaa {
+                (core.storage)(target, samples, format, width, height);
+            } else if gles2::RenderbufferStorageMultisampleAPPLE::is_loaded() {
+                gles2::RenderbufferStorageMultisampleAPPLE(target, samples, format, width, height);
+            } else {
+                log_once!("RenderbufferStorageMultisampleAPPLE: host ES 2.0 driver lacks GL_APPLE_framebuffer_multisample; using single-sample storage");
+                gles2::RenderbufferStorage(target, format, width, height);
+            }
+        };
+        allocate(if promote { 0x81a6 } else { internalformat });
+        if promote {
+            let mut bits = 0;
+            gles2::GetRenderbufferParameteriv(target, 0x8d54, &mut bits);
+            if bits >= 24 {
+                log!("[DSnativeDepth ES2] multisample D16 promoted to D24: {}x{} actual_bits={}", width, height, bits);
+            } else {
+                log!("[DSnativeDepth ES2] multisample D24 unavailable (bits={}); retaining guest D16", bits);
+                allocate(internalformat);
+            }
         }
     }
     unsafe fn ResolveMultisampleFramebufferAPPLE(&mut self) {
@@ -1043,7 +1069,14 @@ impl GLES for GLES2Native<'_> {
         renderbuffertarget: GLenum,
         renderbuffer: GLuint,
     ) {
-        gles2::FramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer)
+        gles2::FramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer);
+        if cfg!(target_os = "android") && attachment == gles2::DEPTH_ATTACHMENT
+            && std::env::var("TOUCHHLE_DS_NATIVE_DEPTH24").as_deref() == Ok("1") {
+            let mut bits = 0;
+            gles2::GetIntegerv(gles2::DEPTH_BITS, &mut bits);
+            log!("[DSnativeDepth ES2] attached depth rb={} framebuffer_bits={} status=0x{:x}",
+                renderbuffer, bits, gles2::CheckFramebufferStatus(target));
+        }
     }
     unsafe fn FramebufferTexture2D(
         &mut self,
@@ -1135,7 +1168,7 @@ impl GLES for GLES2Native<'_> {
         renderbuffertarget: GLenum,
         renderbuffer: GLuint,
     ) {
-        gles2::FramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer)
+        self.FramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer)
     }
     #[allow(clippy::too_many_arguments)]
     unsafe fn FramebufferTexture2DOES(
@@ -1176,7 +1209,7 @@ impl GLES for GLES2Native<'_> {
         width: GLsizei,
         height: GLsizei,
     ) {
-        gles2::RenderbufferStorage(target, internalformat, width, height)
+        self.RenderbufferStorage(target, internalformat, width, height)
     }
     unsafe fn GetRenderbufferParameterivOES(
         &mut self,
@@ -1232,6 +1265,14 @@ impl GLES for GLES2Native<'_> {
             joined.push_str(&s);
         }
 
+        let fog_corrected = if std::env::var("TOUCHHLE_DS_ES2_FOG_FIX").as_deref()==Ok("1") {
+            if let Some(corrected)=super::ds_native_fog::patch(&joined) {
+                joined=corrected;
+                log_once!("[DSes2-fog] verified linear shader: zero fog range disabled");
+                true
+            } else {false}
+        } else {false};
+
         // GLSL ES fragment shaders have no default precision for `float`, so
         // strict drivers (e.g. AMD's native GLES) reject any fragment shader
         // that declares a float without a `precision ... float;` line. Real
@@ -1256,7 +1297,7 @@ impl GLES for GLES2Native<'_> {
                 || joined.contains("texture2DProjLodEXT")
                 || joined.contains("textureCubeLodEXT"));
         let needs_patch =
-            joined.contains("#extension") || needs_lod_patch || needs_precision_inject;
+            joined.contains("#extension") || needs_lod_patch || needs_precision_inject || fog_corrected;
 
         if !needs_patch {
             // No patching needed — pass through directly.
@@ -1281,7 +1322,16 @@ impl GLES for GLES2Native<'_> {
         gles2::ShaderSource(shader, 1, &ptr, std::ptr::null());
     }
     unsafe fn CompileShader(&mut self, shader: GLuint) {
-        gles2::CompileShader(shader)
+        gles2::CompileShader(shader);
+        if std::env::var("TOUCHHLE_DS_ES2_FOG_PROBE").as_deref()==Ok("1") {
+            let mut status=0;gles2::GetShaderiv(shader,gles2::COMPILE_STATUS,&mut status);
+            if status==0 {
+                let mut info=[0u8;4096];let mut length=0;
+                gles2::GetShaderInfoLog(shader,info.len() as i32,&mut length,info.as_mut_ptr().cast());
+                log!("[DSes2-shader-check] shader={} compile_failed info={}",shader,
+                    String::from_utf8_lossy(&info[..(length.max(0) as usize).min(info.len())]));
+            }
+        }
     }
     unsafe fn GetShaderPrecisionFormat(
         &mut self,
@@ -1374,6 +1424,9 @@ impl GLES for GLES2Native<'_> {
     }
     unsafe fn GetAttribLocation(&mut self, program: GLuint, name: *const GLchar) -> GLint {
         gles2::GetAttribLocation(program, name)
+    }
+    unsafe fn GetUniformiv(&mut self, program: GLuint, location: GLint, params: *mut GLint) {
+        gles2::GetUniformiv(program, location, params)
     }
     unsafe fn GetUniformLocation(&mut self, program: GLuint, name: *const GLchar) -> GLint {
         gles2::GetUniformLocation(program, name)

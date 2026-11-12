@@ -427,6 +427,9 @@ impl Environment {
         };
         log!("{:?} device family is chosen.", device_family);
         if launched_bundle_id=="com.ea.deadspace.bv" {
+            if std::env::var_os("TOUCHHLE_DS_ES2_FOG_FIX").is_none() {
+                unsafe { std::env::set_var("TOUCHHLE_DS_ES2_FOG_FIX", "1"); }
+            }
             let machine=device_family.machine_name();
             let high=machine.starts_with("iPhone4,") || machine.starts_with("iPhone5,");
             log!("[DSnative-effects] selected_model={} native_high_tier={}",machine,high);
@@ -1514,6 +1517,7 @@ impl Environment {
     pub fn run(mut self) {
         crate::ds_font_roles::prime(&mut self);
         crate::ds_game_clock::prime(&mut self);
+        crate::ds_shader_projection::prime(&mut self);
         #[cfg(target_os = "android")]
         crate::ds_skin_math::prime(&mut self);
         #[cfg(target_os = "android")]
@@ -1772,6 +1776,7 @@ impl Environment {
                 || crate::ds_native_math_profile::handle_breakpoint(self)
                 || crate::ds_skin_math::handle_breakpoint(self)
                 || crate::ds_game_clock::handle_breakpoint(self)
+                || crate::ds_shader_projection::handle_breakpoint(self)
                 || crate::ds_chapter_overlay::handle_breakpoint(self))
         {
             return;

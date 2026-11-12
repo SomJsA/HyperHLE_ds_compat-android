@@ -93,3 +93,8 @@
 ## Android渲染线程实验
 
 - RENDER_THREAD=sync/queue 默认关闭；所有GL上下文与物理交换必须属于同一Window工作线程。指针调用/查询/绘制仍同步，未接入owned快照前不得异步化。不得给Environment/Window加unsafe Send/Sync。更改Native GLES签名后执行 tools/renderer/generate-native-proxy.py --check。背景停泊/表面重建/销毁顺序、原生UI及输入延迟需要实测，组件收益不代表游戏60帧。见dev-docs/ANDROID-RENDER-OWNER.md。
+
+## R4 原生高档开局投影
+
+- GLES1旧视觉修复不能假定覆盖高档GLES2。开局远平面裁剪通过ShaderRendererAPI的完整140字节/导出符号指纹和纯投影形状限定，原store回放只改合格目标m10，保留源矩阵、寄存器/CPSR/FPSCR和显式回退。不能扩成任意WVP矩阵改写、全局关闭深度/裁剪或只按帧号修复。
+- 回归必须包含完整开局运镜同二进制开关A/B和落地可操作状态；截图/录屏/探针负载不计真实性能。未知原生代码/投影/资源保持原路径；禁止为消除失败重采样guard基线。见dev-docs/R4-NATIVE-EFFECTS.md。
