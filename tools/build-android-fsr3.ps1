@@ -17,6 +17,8 @@ param(
     [int]$TargetSdk = 24,
     [int]$ScaleHack = 2,
     [bool]$FastPresent = $false,
+    [bool]$BundledTextures = $false,
+    [int]$TextureScale = 0,
     [string]$ApplicationIdSuffix = '',
     [string]$BundledIpaPath = ''
 )
@@ -80,7 +82,10 @@ try {
         "-PtouchHleTargetSdk=$TargetSdk" `
         "-PtouchHleFastPresent=$FastPresent" `
         "-PtouchHleScaleHack=$ScaleHack" `
+        "-PtouchHleBundledTextures=$BundledTextures" `
+        "-PtouchHleTextureScale=$TextureScale" `
         "-PtouchHleApplicationIdSuffix=$ApplicationIdSuffix" `
+        "-PtouchHleSdlJavaDir=$(Join-Path $repoRoot 'vendor/SDL/android-project/app/src/main/java')" `
         $task
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle failed with exit code $LASTEXITCODE"

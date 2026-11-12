@@ -18,7 +18,13 @@ def touchHleAndroidAbi = project.findProperty('touchHleAndroidAbi') ?: 'arm64-v8
 def touchHleTargetSdk = (project.findProperty('touchHleTargetSdk') ?: '24').toString().toInteger()
 def touchHleFastPresent = (project.findProperty('touchHleFastPresent') ?: 'false').toBoolean()
 def touchHleScaleHack = (project.findProperty('touchHleScaleHack') ?: '2').toString().toInteger()
+def touchHleBundledTextures = (project.findProperty('touchHleBundledTextures') ?: 'false').toBoolean()
+def touchHleTextureScale = (project.findProperty('touchHleTextureScale') ?: '0').toString().toInteger()
 def touchHleSaveLab = (project.findProperty('touchHleSaveLab') ?: 'false').toBoolean()
+def touchHleReleaseTag = (project.findProperty('touchHleReleaseTag') ?: '20261112-r3').toString()
+if (touchHleReleaseTag && !(touchHleReleaseTag ==~ /[A-Za-z0-9.-]{1,40}/)) {
+    throw new GradleException('Invalid release tag')
+}
 def prebuiltNativeDir = project.findProperty('touchHlePrebuiltNativeDir')
 def explicitApplicationIdSuffix =
         (project.findProperty('touchHleApplicationIdSuffix') ?: '').toString()
@@ -85,17 +91,19 @@ android {
         // default remains empty so release/normal debug artifacts are unchanged.
         def resolvedApplicationIdSuffix = brandingSuffix + explicitApplicationIdSuffix
         applicationIdSuffix(resolvedApplicationIdSuffix.isEmpty() ? null : resolvedApplicationIdSuffix)
-        def displayName = touchHleSaveLab ? '死亡空间 · 存档实验室' : explicitApplicationIdSuffix == '.translationlab' ? '死亡空间·校订测试' : explicitApplicationIdSuffix == '.chaptertest' ? '死亡空间·章节测试' : '死亡空间 Legacy · somjs'
+        def displayName = touchHleSaveLab ? '死亡空间移动版（IOS端高清移植） · Save Lab' : explicitApplicationIdSuffix == '.translationlab' ? '死亡空间移动版（IOS端高清移植） · Translation Test' : explicitApplicationIdSuffix == '.chaptertest' ? '死亡空间移动版（IOS端高清移植） · Chapter Test' : '死亡空间移动版（IOS端高清移植）'
         resValue 'string', 'app_name', displayName
         buildConfigField 'String', 'APP_NAME', '"' + displayName + '"'
         buildConfigField 'boolean', 'SAVE_LAB', touchHleSaveLab.toString()
         buildConfigField 'boolean', 'FAST_PRESENT', touchHleFastPresent.toString()
         buildConfigField 'int', 'SCALE_HACK', touchHleScaleHack.toString()
+        buildConfigField 'boolean', 'BUNDLED_TEXTURES', touchHleBundledTextures.toString()
+        buildConfigField 'int', 'BUNDLED_TEXTURE_SCALE', touchHleTextureScale.toString()
         manifestPlaceholders = [
                 icon: join('@drawable/icon', '_', branding.toLowerCase())
         ]
         buildConfigField 'int', 'APP_ICON', join('R.drawable.icon', '_', branding.toLowerCase())
-        versionName join(getTouchHLEVersionName(), ' ', branding)
+        versionName join(getTouchHLEVersionName(), ' ', branding) + (touchHleReleaseTag ? '-' + touchHleReleaseTag : '')
 
         minSdkVersion 21 // first version with AArch64
         // Keep the runtime contract as old as practical. compileSdk stays at

@@ -6071,7 +6071,7 @@ fn ds_apply_anisotropy(gles: &mut dyn GLES) {
     }
 }
 
-fn ds_finish_texture_upload(gles: &mut dyn GLES) {
+fn ds_finish_texture_upload(gles: &mut dyn GLES, payload: bool) {
     use crate::ds_texture_upload_sync::Mode;
     static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
     let mode = *MODE.get_or_init(|| {
@@ -6083,11 +6083,18 @@ fn ds_finish_texture_upload(gles: &mut dyn GLES) {
         log!("[DStexture-sync] effective policy {:?}; explicit0/off disables CPU finish", mode);
         mode
     });
-    if mode == Mode::Off { return; }
+    if !should_finish_texture_upload(mode, payload) { return; }
     let profile_start = crate::ds_execution_profile::begin_exact();
     unsafe { match mode { Mode::Finish => gles.Finish(), Mode::Flush => gles.Flush(), Mode::Off => unreachable!() } }
     crate::ds_execution_profile::end_host(
         if mode == Mode::Finish { "<texture-upload-glFinish>" } else { "<texture-upload-glFlush>" }, profile_start);
+}
+
+/// Empty or zero-area uploads allocate/validate storage but carry no pixel
+/// payload whose completion needs a driver finish. Keep the GL call ordered
+/// while avoiding a full flush/finish on those paths.
+fn should_finish_texture_upload(mode: crate::ds_texture_upload_sync::Mode, payload: bool) -> bool {
+    payload && mode != crate::ds_texture_upload_sync::Mode::Off
 }
 
 fn glTexImage2D(
@@ -6401,7 +6408,7 @@ fn glTexImage2D(
             type_,
             pixels,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !pixels.is_null() && width > 0 && height > 0);
         if level == 0 {
             ds_apply_anisotropy(gles);
         }
@@ -6470,7 +6477,7 @@ fn glTexSubImage2D(
         gles.TexSubImage2D(
             target, level, xoffset, yoffset, width, height, format, type_, pixels,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !pixels.is_null() && width > 0 && height > 0);
     })
 }
 fn glCompressedTexImage2D(
@@ -6894,7 +6901,7 @@ fn glCompressedTexImage2D(
             image_size,
             data,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !data.is_null() && image_size > 0 && width > 0 && height > 0);
         if level == 0 {
             ds_apply_anisotropy(gles);
         }
@@ -10812,5 +10819,25 @@ mod shader_preprocessor_normalization_tests {
         let out = normalize_shader_preprocessor_whitespace(&joined);
         assert!(out.contains("#endif //trailing comment"));
         assert!(!out.contains("#endif//trailing comment"));
+    }
+}
+
+#[cfg(test)]
+mod texture_upload_sync_tests {
+    use super::should_finish_texture_upload;
+    use crate::ds_texture_upload_sync::Mode;
+
+    #[test]
+    fn empty_uploads_do_not_finish_the_driver() {
+        for mode in [Mode::Off, Mode::Flush, Mode::Finish] {
+            assert!(!should_finish_texture_upload(mode, false));
+        }
+    }
+
+    #[test]
+    fn payload_uploads_keep_the_requested_policy() {
+        assert!(!should_finish_texture_upload(Mode::Off, true));
+        assert!(should_finish_texture_upload(Mode::Flush, true));
+        assert!(should_finish_texture_upload(Mode::Finish, true));
     }
 }

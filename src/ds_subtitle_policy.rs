@@ -42,9 +42,71 @@ pub(crate) fn timing_value(total:u32,remaining:i32)->u64 {
     (u64::from(total)<<32)|u64::from(elapsed)
 }
 
+pub(crate) fn opening_offset(id: &str) -> i64 {
+    match id {
+        "Oper_02" | "Miner_02" => 1500,
+        "Miner_01" => -2500,
+        _ => 0,
+    }
+}
+
+/// Absolute cue windows use the original track clock. Looking ahead is
+/// necessary for an early cue; waiting for its native event would be too late.
+pub(crate) fn adjusted_cue(cues: &[(u32, u32, i64)], segment: u32, remaining: i32)
+    -> Option<(u32, u32, u64)> {
+    let current = cues.get(segment as usize)?;
+    let mut clock = i64::from(current.1) - i64::from(remaining);
+    for cue in &cues[..segment as usize] { clock += i64::from(cue.1); }
+    let mut start = 0i64;
+    let mut chosen = None;
+    let mut latest_start = i64::MIN;
+    for (position, &(index, duration, offset)) in cues.iter().enumerate() {
+        if !(100..=600_000).contains(&duration) { return None; }
+        let shifted = start + offset;
+        if index != 0 && clock >= shifted && clock < shifted + i64::from(duration) && shifted >= latest_start {
+            latest_start = shifted;
+            chosen = Some((position as u32, index,
+                (u64::from(duration) << 32) | (clock - shifted) as u64));
+        }
+        start += i64::from(duration);
+    }
+    chosen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opening_adjustments_use_guest_time_and_do_not_shift_sector_six() {
+        assert_eq!(opening_offset("Anchor_02"), 0);
+        assert_eq!(opening_offset("Oper_02"), 1500);
+        assert_eq!(opening_offset("Miner_02"), 1500);
+        assert_eq!(opening_offset("Miner_01"), -2500);
+        let cues = [(1, 5000, 0), (2, 5000, 1500), (3, 5000, 0), (4, 5000, -2500)];
+        assert_eq!(adjusted_cue(&cues, 1, 5000), None);
+        assert_eq!(adjusted_cue(&cues, 1, 3500), Some((1, 2, 5000u64 << 32)));
+        assert_eq!(adjusted_cue(&cues, 2, 5000), Some((2, 3, 5000u64 << 32)));
+        assert_eq!(adjusted_cue(&cues, 2, 2500), Some((3, 4, 5000u64 << 32)));
+        assert_eq!(adjusted_cue(&cues, 2, 2500), adjusted_cue(&cues, 2, 2500));
+    }
+    #[test]
+    fn original_opening_track_keeps_silent_gaps_and_supports_early_lookahead() {
+        // Original published/data/subtitles.sb: the timed opening track has
+        // fourteen entries, including empty IDs for silence.
+        let cues = [(0,4500,0),(1,4500,0),(0,3500,0),(2,4500,1500),
+            (0,1000,0),(3,2000,1500),(0,3500,0),(4,6500,0),
+            (0,3000,0),(5,3000,-2500),(0,5000,0),(6,3000,0),
+            (0,1500,0),(7,5000,0)];
+        assert_eq!(adjusted_cue(&cues,3,4500),None);
+        assert_eq!(adjusted_cue(&cues,3,3000),Some((3,2,4500u64<<32)));
+        assert_eq!(adjusted_cue(&cues,4,500),Some((3,2,(4500u64<<32)|3500)));
+        assert_eq!(adjusted_cue(&cues,5,2000),Some((3,2,(4500u64<<32)|4000)));
+        assert_eq!(adjusted_cue(&cues,5,500),Some((5,3,2000u64<<32)));
+        assert_eq!(adjusted_cue(&cues,7,6500),Some((7,4,6500u64<<32)));
+        assert_eq!(adjusted_cue(&cues,8,2500),Some((9,5,3000u64<<32)));
+        assert_eq!(adjusted_cue(&cues,10,5000),None);
+        assert_eq!(adjusted_cue(&cues,11,3000),Some((11,6,3000u64<<32)));
+    }
     #[test]
     fn settings_resume_never_targets_a_new_or_already_running_world(){
         assert!(resume_menu(42,42,2));assert!(resume_menu(42,42,3));

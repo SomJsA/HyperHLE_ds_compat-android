@@ -111,7 +111,7 @@ final class RuntimeStorage {
             atomicWrite(marker,m.toString().getBytes(StandardCharsets.UTF_8));
             File note=child(root,"配置和存档说明.txt");
             if(note.createNewFile()) try(FileOutputStream out=new FileOutputStream(note)) {
-                out.write(("DeadSpace Legacy 资料布局 v1\n\n原生进度：touchHLE_sandbox/"+GAME+"\nAndroid配置：config/android\nPC配置：config/pc\n诊断：diagnostics\n\n三槽ZIP是双端交换原生存档和公共依赖的格式，平台启动器配置分别保存。未知布局拒绝写入；切换位置不会搬移、合并或覆盖已有进度。\nAndroid默认位置是应用专属Documents，可通过系统文件选择器的本应用入口访问。卸载前请导出存档；此目录并非公共Documents授权目录。\nsomjs宿主包与旧宿主包资料独立，旧进度请通过三槽ZIP导入。\n").getBytes(StandardCharsets.UTF_8));out.getFD().sync();
+                out.write(("死亡空间移动版（IOS端高清移植） 资料布局 v1\n\n原生进度：touchHLE_sandbox/"+GAME+"\nAndroid配置：config/android\nPC配置：config/pc\n诊断：diagnostics\n\n三槽ZIP是双端交换原生存档和公共依赖的格式，平台启动器配置分别保存。未知布局拒绝写入；切换位置不会搬移、合并或覆盖已有进度。\nAndroid默认位置是应用专属Documents，可通过系统文件选择器的本应用入口访问。卸载前请导出存档；此目录并非公共Documents授权目录。\nsomjs宿主包与旧宿主包资料独立，旧进度请通过三槽ZIP导入。\n").getBytes(StandardCharsets.UTF_8));out.getFD().sync();
             }
         }
     }
@@ -134,7 +134,8 @@ final class RuntimeStorage {
         return d;
     }
     private static boolean portablePreference(String key) {
-        return !MODE.equals(key) && !ROOT.equals(key) && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
+        return !MODE.equals(key) && !ROOT.equals(key) && !"ui_language".equals(key)
+                && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
     }
     private static char preferenceType(String key) {
         if ("quality_preset".equals(key)||SaveNodeMonitor.KEY_SESSION.equals(key))return 's';
@@ -167,6 +168,9 @@ final class RuntimeStorage {
         File root=requireCompatible(c);JSONObject d=readConfiguration(root);
         if(d==null)d=new JSONObject();JSONObject values=d.optJSONObject("values");if(values==null)values=new JSONObject();
         try {
+            // UI language belongs to this app, independent of a selected save
+            // location. An old exported graphics config must not override it.
+            values.remove("ui_language");
             for(Map.Entry<String,?> entry:prefs(c).getAll().entrySet())
                 if(portablePreference(entry.getKey()) && (entry.getValue() instanceof Boolean || entry.getValue() instanceof Number || entry.getValue() instanceof String))values.put(entry.getKey(),entry.getValue());
             d.put("schema",1).put("game",GAME).put("values",values);

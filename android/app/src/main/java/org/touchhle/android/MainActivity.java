@@ -10,6 +10,7 @@ package org.touchhle.android;
 
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.res.AssetManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -27,6 +28,9 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.Display;
+import android.view.OrientationEventListener;
+import android.view.Surface;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -62,26 +66,25 @@ public class MainActivity extends SDLActivity {
     }
 
     private final Runnable immersiveModeRunnable = this::applyImmersiveMode;
-    private File startupReport;
-    private StartupReview startupReview;
     private boolean showFps;
     private boolean logStats;
     private int statsLogTick;
     private Handler fpsHandler;
     private TextView fpsOverlay;
+    private Button rotateScreenButton;
+    private OrientationEventListener orientationListener;
+    private int lockedLandscapeSide;
+    private int pendingLandscapeSide = -1;
+    private int stableLandscapeSide = -1;
     private AlertDialog pauseDialog;
     private boolean manualPause;
     private boolean activityResumed;
-    private static native void nativeBenchmarkPause(boolean paused);
-    private void benchmarkPause(boolean paused){if(getIntent().getBooleanExtra("benchmark",false))try{nativeBenchmarkPause(paused);}catch(LinkageError error){Log.w(TAG,"Benchmark pause hook unavailable",error);}}
     private ChapterOverlayView chapterOverlay;
     private SaveNodeMonitor saveNodeMonitor;
     private final Runnable fpsUpdateRunnable = this::updateFpsOverlay;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        try {startupReport=StartupReview.newReport(this);}
-        catch(IOException error){Log.w(TAG,"Current startup report unavailable",error);}
         if (getIntent().getBooleanExtra(SaveNodeMonitor.KEY_ENABLED, false)) {
             boolean pictures = getIntent().getBooleanExtra(SaveNodeMonitor.KEY_IMAGES, true);
             saveNodeMonitor = new SaveNodeMonitor(this,
@@ -89,6 +92,7 @@ public class MainActivity extends SDLActivity {
             saveNodeMonitor.start();
         }
         super.onCreate(savedInstanceState);
+        lockCurrentLandscapeSide();
         showFps = getIntent().getBooleanExtra("show_fps", true);
         logStats = getIntent().getBooleanExtra("stats_log", false);
         applyImmersiveMode();
@@ -107,19 +111,19 @@ public class MainActivity extends SDLActivity {
                 Log.e(TAG, "[DSchapter-view] unavailable; retaining original chapter display", error);
             }
         }
+        installRotationConfirmation();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        if(startupReview==null && startupReport!=null && mLayout!=null)
-            startupReview=new StartupReview(this,startupReport,getIntent(),mLayout,getIntent().getBooleanExtra("startup_check",true));
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        activityResumed=true;benchmarkPause(manualPause);
+        if (orientationListener != null) orientationListener.enable();
+        activityResumed=true;
         if (chapterOverlay != null) { chapterOverlay.setRunning(!manualPause); }
         if (manualPause) {
             pauseNativeThread();
@@ -132,15 +136,20 @@ public class MainActivity extends SDLActivity {
 
     @Override
     protected void onPause() {
-        activityResumed=false;benchmarkPause(true);
+        activityResumed=false;
+        rotationObservation++;
+        stableLandscapeSide = -1;
+        pendingLandscapeSide = -1;
+        if (rotateScreenButton != null) rotateScreenButton.setVisibility(View.GONE);
         if (chapterOverlay != null) { chapterOverlay.setRunning(false); }
         stopFpsUpdates();
+        if (orientationListener != null) orientationListener.disable();
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
-        if(startupReview!=null)startupReview.close();
+        if (orientationListener != null) orientationListener.disable();
         stopFpsUpdates();
         if (pauseDialog != null) {
             pauseDialog.dismiss();
@@ -153,6 +162,77 @@ public class MainActivity extends SDLActivity {
         // Release the manual pause before delegating teardown to SDL.
         resumeFromMenu();
         super.onDestroy();
+    }
+
+    private int landscapeSideForRotation(int rotation) {
+        return naturalLandscape
+                ? (rotation == Surface.ROTATION_180 ? 1 : 0)
+                : (rotation == Surface.ROTATION_270 ? 1 : 0);
+    }
+
+    private boolean naturalLandscape;
+    private int rotationObservation;
+
+    private void lockCurrentLandscapeSide() {
+        Display display = getWindowManager().getDefaultDisplay();
+        android.graphics.Point size = new android.graphics.Point();
+        display.getSize(size);
+        int rotation = display.getRotation();
+        naturalLandscape = ((rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180)
+                == (size.x > size.y));
+        lockedLandscapeSide = landscapeSideForRotation(display.getRotation());
+        setRequestedOrientation(lockedLandscapeSide == 0
+                ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
+    }
+
+    private void installRotationConfirmation() {
+        rotateScreenButton = new Button(this);
+        rotateScreenButton.setText("↻");
+        rotateScreenButton.setTextSize(24f);
+        rotateScreenButton.setContentDescription("确认翻转横屏 / Confirm screen rotation");
+        rotateScreenButton.setAllCaps(false);
+        rotateScreenButton.setVisibility(View.GONE);
+        rotateScreenButton.setOnClickListener(view -> {
+            if (pendingLandscapeSide < 0 || pendingLandscapeSide == lockedLandscapeSide) return;
+            lockedLandscapeSide = pendingLandscapeSide;
+            pendingLandscapeSide = -1;
+            stableLandscapeSide = -1;
+            rotateScreenButton.setVisibility(View.GONE);
+            setRequestedOrientation(lockedLandscapeSide == 0
+                    ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    : ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
+        });
+        RelativeLayout.LayoutParams buttonParams = new RelativeLayout.LayoutParams(dp(52), dp(52));
+        buttonParams.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
+        buttonParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        buttonParams.setMargins(0, dp(20), dp(20), 0);
+        mLayout.addView(rotateScreenButton, buttonParams);
+        orientationListener = new OrientationEventListener(this) {
+            @Override public void onOrientationChanged(int orientation) {
+                int side = LandscapeRotation.side(orientation, naturalLandscape);
+                if (side < 0 || side == lockedLandscapeSide) {
+                    rotationObservation++;
+                    pendingLandscapeSide = -1;
+                    stableLandscapeSide = -1;
+                    rotateScreenButton.setVisibility(View.GONE);
+                    return;
+                }
+                if (side != stableLandscapeSide) {
+                    final int observation = ++rotationObservation;
+                    stableLandscapeSide = side;
+                    final int observed = side;
+                    rotateScreenButton.postDelayed(() -> {
+                        if (activityResumed && rotationObservation == observation
+                                && stableLandscapeSide == observed && lockedLandscapeSide != observed) {
+                            pendingLandscapeSide = observed;
+                            rotateScreenButton.setVisibility(View.VISIBLE);
+                        }
+                    }, 700);
+                }
+            }
+        };
+        if (!orientationListener.canDetectOrientation()) orientationListener = null;
     }
 
     private void scheduleGameProcessExit() {
@@ -176,7 +256,6 @@ public class MainActivity extends SDLActivity {
 
     @Override
     public void onBackPressed() {
-        if(startupReview!=null && startupReview.isShowing()){startupReview.dismiss();return;}
         if (pauseDialog != null && pauseDialog.isShowing()) {
             // Let the current layer's cancellation policy run: pause resumes,
             // confirmation returns to pause. Never create a second dialog.
@@ -201,7 +280,6 @@ public class MainActivity extends SDLActivity {
 
     private void pauseForMenu() {
         if (!manualPause) {
-            benchmarkPause(true);
             nativePrepareCaptionMenu();
             manualPause = true;
             if (chapterOverlay != null) { chapterOverlay.setRunning(false); }
@@ -213,7 +291,6 @@ public class MainActivity extends SDLActivity {
         if (manualPause) {
             nativeResumeCaptionMenu();
             manualPause = false;
-            benchmarkPause(!activityResumed);
             if (chapterOverlay != null) { chapterOverlay.setRunning(true); }
             resumeNativeThread();
         }
@@ -221,6 +298,12 @@ public class MainActivity extends SDLActivity {
 
     private void showPauseMenu() {
         LinearLayout controls=new LinearLayout(this);controls.setOrientation(LinearLayout.VERTICAL);
+        TextView credits = new TextView(this);
+        credits.setText("死亡空间移动版（IOS端高清移植）\n基于 touchHLE 与 HyperHLE · 本项目链接当前可能暂时处于私有状态\n项目开发：SomJs\n特别感谢：lxyun_2（腹黑小喵）、MisakaCharlotte（是的呀啊）、特洛克·洛克莱斯、天雷本雷、豆沙包里有磁\n死亡空间贴吧汉化组：https://tieba.baidu.com/wxf/341915?kw=%E6%AD%BB%E4%BA%A1%E7%A9%BA%E9%97%B4&fr=sharewise\nSomJs · Bilibili：https://space.bilibili.com/34237026\n问题反馈 / Bug reports：https://github.com/SomJsA/DeadSpaceMobile-Community/issues");
+        credits.setTextSize(10);
+        credits.setTextColor(Color.LTGRAY);
+        credits.setPadding(dp(12), dp(8), dp(12), dp(10));
+        controls.addView(credits);
         android.widget.Button subtitleSettings = new android.widget.Button(this);
         subtitleSettings.setText("字幕显示设置 · 位置 / 字号 / 颜色 / 透明度");
         subtitleSettings.setOnClickListener(view -> {
@@ -229,11 +312,6 @@ public class MainActivity extends SDLActivity {
             else { Toast.makeText(this, "此版本未启用字幕测试层", Toast.LENGTH_SHORT).show(); }
         });
         controls.addView(subtitleSettings);
-        Button checks=new Button(this);checks.setText("本次启动自检 / 短测结果");
-        checks.setOnClickListener(v->showTrackedPauseDialog(new AlertDialog.Builder(this).setTitle("本次启动自检")
-            .setMessage(startupReview==null?"本次检查报告尚不可用，所有项目待确认。":startupReview.summary())
-            .setPositiveButton("返回暂停菜单",(d,w)->showPauseMenu()).setOnCancelListener(d->showPauseMenu()).create()));
-        controls.addView(checks);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("游戏已暂停")
                 .setMessage("返回键不会直接退出游戏。"
@@ -407,6 +485,7 @@ public class MainActivity extends SDLActivity {
     }
     private static final String BUNDLED_IPA_ASSET = "touchHLE_bundled/DeadSpace.ipa";
     private static final String BUNDLED_IPA_ID_ASSET = "touchHLE_bundled/bundle.id";
+    private static final String BUNDLED_TEXTURE_ASSET = "touchHLE_textures";
 
     private boolean chapterOverlayEnabled() {
         return getIntent().getBooleanExtra("overlay_enabled", getIntent().getBooleanExtra("chapter_overlay",
@@ -461,10 +540,18 @@ public class MainActivity extends SDLActivity {
                         "fast_present", BuildConfig.FAST_PRESENT);
                 boolean skipReadback = getIntent().getBooleanExtra("skip_readback", false);
                 boolean gpuPresentCopy = getIntent().getBooleanExtra("gpu_present_copy", false);
+                boolean bundledTextures = getIntent().getBooleanExtra("bundled_textures", BuildConfig.BUNDLED_TEXTURES);
+                File bundledTextureDir = null;
+                if (bundledTextures && BuildConfig.BUNDLED_TEXTURES) {
+                    bundledTextureDir = ensureBundledTexturesCopied();
+                }
                 int fsrMode = getIntent().getIntExtra("present_fsr", 0);
                 boolean aaEnabled = getIntent().getBooleanExtra("aa", false);
                 boolean stretchViewport = getIntent().getBooleanExtra("viewport_stretch", false);
                 int sharpenTenths = getIntent().getIntExtra("present_sharpen", 0);
+                boolean safeBlackFloor = getIntent().getBooleanExtra("safe_black_floor", false);
+                int safeBlackGray = Math.max(0, Math.min(160,
+                        getIntent().getIntExtra("safe_black_gray", 75)));
                 boolean fsr3AhbProbe = getIntent().getBooleanExtra("fsr3_ahb_probe", false);
                 boolean fsr3Force = getIntent().getBooleanExtra("fsr3_force", false);
                 boolean fsr3FrameGeneration = getIntent().getBooleanExtra("fsr3_fg", false);
@@ -482,10 +569,11 @@ public class MainActivity extends SDLActivity {
                 configureRuntimeOptions(
                         scale, fpsCap, debugLogs, dumpFrames, pcCompat,
                         skipReadback, fsrMode, aaEnabled, sharpenTenths, stretchViewport,
+                        safeBlackFloor, safeBlackGray,
                         gpuPresentCopy, fsr3AhbProbe, fsr3FrameGeneration, fsr3RealDepth,
                         fsr3GpuDepth, fsr3Async, fsr3DirectOutput, fsr3DiagReadback,
                         fsr3Trace, fsr3Force,
-                        fsr3FgSynthetic, fsr3FgProbe);
+                        fsr3FgSynthetic, fsr3FgProbe, bundledTextureDir);
 
                 List<String> args = new ArrayList<>();
                 args.add("--preferred-languages=zh-Hans,zh");
@@ -562,21 +650,39 @@ public class MainActivity extends SDLActivity {
             int scale, int fpsCap, boolean debugLogs, boolean dumpFrames,
             boolean pcCompat, boolean skipReadback, int fsrMode,
             boolean aaEnabled, int sharpenTenths, boolean stretchViewport,
+            boolean safeBlackFloor, int safeBlackGray,
             boolean gpuPresentCopy, boolean fsr3AhbProbe,
             boolean fsr3FrameGeneration, boolean fsr3RealDepth,
             boolean fsr3GpuDepth, boolean fsr3Async, boolean fsr3DirectOutput,
             boolean fsr3DiagReadback, boolean fsr3Trace, boolean fsr3Force,
-            boolean fsr3FgSynthetic, boolean fsr3FgProbe) {
+            boolean fsr3FgSynthetic, boolean fsr3FgProbe, File bundledTextureDir) {
         File base = getExternalFilesDir(null);
         if (base == null) {
             base = getFilesDir();
         }
         File diagnostics = new File(base, "diagnostics");
         diagnostics.mkdirs();
-        if(startupReport!=null)setEnv("TOUCHHLE_DS_STARTUP_REPORT",startupReport.getAbsolutePath());
-        else unsetEnv("TOUCHHLE_DS_STARTUP_REPORT");
-        if(getIntent().getBooleanExtra("benchmark",false))setEnv("TOUCHHLE_DS_BENCHMARK","1");
-        else unsetEnv("TOUCHHLE_DS_BENCHMARK");
+        // Android-only side-flick guard. The launcher owns this independent
+        // setting; disabling it restores the original continuous sensor input.
+        setEnv("TOUCHHLE_DS_TILT_PULSE",
+                getIntent().getBooleanExtra("tilt_pulse", false) ? "1" : "0");
+        int tiltThreshold = TiltGestureSettings.clamp(getIntent().getIntExtra("tilt_threshold_mg",
+                getIntent().hasExtra("tilt_threshold_g100") ? getIntent().getIntExtra("tilt_threshold_g100", 32) * 10 : TiltGestureSettings.DEFAULT_MILLI_G));
+        int tiltCooldown = Math.max(100, Math.min(1000,
+                getIntent().getIntExtra("tilt_cooldown_ms", 380)));
+        setEnv("TOUCHHLE_DS_TILT_THRESHOLD_G", String.format(Locale.US, "%.3f", tiltThreshold / 1000.0));
+        setEnv("TOUCHHLE_DS_TILT_COOLDOWN_MS", Integer.toString(tiltCooldown));
+        if (bundledTextureDir != null) {
+            String textureDir = bundledTextureDir.getAbsolutePath();
+            setEnv("TOUCHHLE_DS_TEXDIR", textureDir);
+            // PVRTC uploads use the compressed-texture override path; without
+            // this second variable the 4x PNGs exist but never replace most
+            // in-game textures.
+            setEnv("TOUCHHLE_DS_TEX_OVERRIDE", textureDir);
+        } else {
+            unsetEnv("TOUCHHLE_DS_TEXDIR");
+            unsetEnv("TOUCHHLE_DS_TEX_OVERRIDE");
+        }
         if (chapterOverlayEnabled()) {
             setEnv("TOUCHHLE_DS_CHAPTER_OVERLAY", "1");
             setEnv("TOUCHHLE_DS_SUBTITLE_OVERLAY", "1");
@@ -681,6 +787,13 @@ public class MainActivity extends SDLActivity {
                     String.format(Locale.US, "%.1f", sharpenTenths / 10.0));
         } else {
             unsetEnv("TOUCHHLE_DS_PRESENT_SHARPEN");
+        }
+        if (safeBlackFloor) {
+            setEnv("TOUCHHLE_DS_SAFE_BLACK_FLOOR", "1");
+            setEnv("TOUCHHLE_DS_SAFE_BLACK_GRAY", Integer.toString(Math.max(0, Math.min(160, safeBlackGray))));
+        } else {
+            unsetEnv("TOUCHHLE_DS_SAFE_BLACK_FLOOR");
+            unsetEnv("TOUCHHLE_DS_SAFE_BLACK_GRAY");
         }
 
         if (gpuPresentCopy) {
@@ -970,6 +1083,13 @@ public class MainActivity extends SDLActivity {
             runOnUiThread(() -> Toast.makeText(this, "正在准备内置游戏资源，首次启动需要一些时间。", Toast.LENGTH_LONG).show());
             return assets.open(BUNDLED_IPA_ASSET);
         });
+    }
+
+    private File ensureBundledTexturesCopied() throws IOException {
+        File base = getExternalFilesDir(null);
+        if (base == null) base = getFilesDir();
+        int scale = Math.max(1, Math.min(4, BuildConfig.BUNDLED_TEXTURE_SCALE));
+        return BundledTextureStore.ensure(base, getAssets(), scale);
     }
 
     private static String readAssetText(AssetManager assets, String path) throws IOException {

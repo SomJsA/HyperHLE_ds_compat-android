@@ -23,9 +23,12 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.EditText;
+import android.text.util.Linkify;
+import android.text.method.LinkMovementMethod;
 
 import java.io.File;
 import java.io.IOException;
@@ -52,10 +55,17 @@ public class LauncherActivity extends Activity {
     static final String KEY_FAST_PRESENT = "fast_present";
     static final String KEY_SKIP_READBACK = "skip_readback";
     static final String KEY_GPU_COPY = "gpu_present_copy";
+    static final String KEY_TEXTURES = "bundled_textures";
     static final String KEY_FSR = "present_fsr";
     static final String KEY_AA = "aa_mode";
     static final String KEY_SHARPEN = "present_sharpen";
     static final String KEY_SHADOW_BOOST = "shadow_boost";
+    static final String KEY_SAFE_BLACK_FLOOR = "safe_black_floor";
+    static final String KEY_SAFE_BLACK_GRAY = "safe_black_gray";
+    static final String KEY_TILT_PULSE = "tilt_pulse";
+    static final String KEY_TILT_THRESHOLD = "tilt_threshold_mg";
+    static final String LEGACY_TILT_THRESHOLD = "tilt_threshold_g100";
+    static final String KEY_TILT_COOLDOWN = "tilt_cooldown_ms";
     static final String KEY_FSR3_AHB = "fsr3_ahb_probe";
     static final String KEY_FSR3_FG = "fsr3_frame_generation";
     static final String KEY_FSR3_DEPTH = "fsr3_real_depth";
@@ -105,6 +115,7 @@ public class LauncherActivity extends Activity {
     private CheckBox fastPresentToggle;
     private CheckBox skipReadbackToggle;
     private CheckBox gpuCopyToggle;
+    private CheckBox textureToggle;
     private CheckBox fsr3AhbToggle;
     private CheckBox fsr3ForceToggle;
     private CheckBox fsr3FgToggle;
@@ -112,6 +123,14 @@ public class LauncherActivity extends Activity {
     private CheckBox fsr3GpuDepthToggle;
     private CheckBox fsr3AsyncToggle;
     private CheckBox fsr3DirectOutputToggle;
+    private CheckBox safeBlackFloorToggle;
+    private CheckBox tiltPulseToggle;
+    private SeekBar tiltThresholdSeek;
+    private SeekBar tiltCooldownSeek;
+    private TextView tiltThresholdValue;
+    private TextView tiltCooldownValue;
+    private SeekBar safeBlackGraySeek;
+    private TextView safeBlackGrayValue;
     private TextView fsr3SelectionStatus;
     private TextView presetSummary;
     private TextView saveImportStatus;
@@ -133,10 +152,14 @@ public class LauncherActivity extends Activity {
     private boolean aaEnabled;
     private int sharpenTenths;
     private int shadowBoostPercent;
+    private boolean safeBlackFloor;
+    private int safeBlackGray;
+    private boolean tiltPulseEnabled;
+    private int tiltPulseThresholdMilliG;
+    private int tiltPulseCooldownMs;
     private String qualityPreset;
     private boolean advancedExpanded;
     private boolean applyingPreset;
-    private boolean benchmarkNextStart;
     private boolean showFps;
     private boolean debugLogs;
     private boolean dumpFrames;
@@ -144,6 +167,7 @@ public class LauncherActivity extends Activity {
     private boolean fastPresent;
     private boolean skipReadback;
     private boolean gpuPresentCopy;
+    private boolean bundledTextures;
     private boolean fsr3AhbEnabled;
     private boolean fsr3ForceEnabled;
     private boolean fsr3FgEnabled;
@@ -155,10 +179,10 @@ public class LauncherActivity extends Activity {
     @Override
     public void onBackPressed() {
         new AlertDialog.Builder(this)
-                .setTitle("离开启动器？")
-                .setMessage("当前没有运行中的游戏。返回桌面后，游戏不会自行退出。")
-                .setPositiveButton("返回桌面", (d, which) -> finish())
-                .setNegativeButton("取消", null)
+                .setTitle(L("离开启动器？"))
+                .setMessage(L("当前没有运行中的游戏。返回桌面后，游戏不会自行退出。"))
+                .setPositiveButton(L("返回桌面"), (d, which) -> finish())
+                .setNegativeButton(L("取消"), null)
                 .show();
     }
 
@@ -168,8 +192,9 @@ public class LauncherActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         fsr3Supported = Fsr3Capabilities.supportsBasicVulkanPath(this);
         boolean freshInstall = prefs.getAll().isEmpty();
+        LauncherLanguage.initialize(this);
         try { RuntimeStorage.initialize(this); }
-        catch (IOException error) { new AlertDialog.Builder(this).setTitle("资料位置无法使用").setMessage(error.getMessage()).setPositiveButton("查看设置",null).show(); }
+        catch (IOException error) { new AlertDialog.Builder(this).setTitle(L("资料位置无法使用")).setMessage(error.getMessage()).setPositiveButton(L("查看设置"),null).show(); }
         freshInstall = freshInstall && !prefs.contains(KEY_SCALE) && !prefs.contains(KEY_PRESET);
         scaleHack = prefs.getInt(KEY_SCALE, 2);
         fpsCap = prefs.getInt(KEY_CAP, 0);
@@ -178,13 +203,21 @@ public class LauncherActivity extends Activity {
         aaEnabled = prefs.getBoolean(KEY_AA, false);
         sharpenTenths = prefs.getInt(KEY_SHARPEN, 0);
         shadowBoostPercent = Math.max(0, Math.min(100, prefs.getInt(KEY_SHADOW_BOOST, 0)));
-        showFps = prefs.getBoolean(KEY_FPS, true);
+        safeBlackFloor = prefs.getBoolean(KEY_SAFE_BLACK_FLOOR, false);
+        safeBlackGray = Math.max(0, Math.min(160, prefs.getInt(KEY_SAFE_BLACK_GRAY, 75)));
+        tiltPulseEnabled = prefs.getBoolean(KEY_TILT_PULSE, false);
+        tiltPulseThresholdMilliG = TiltGestureSettings.clamp(prefs.getInt(KEY_TILT_THRESHOLD, TiltGestureSettings.upgradeLegacy(prefs.getInt(LEGACY_TILT_THRESHOLD, 32))));
+        tiltPulseCooldownMs = Math.max(100, Math.min(1000, prefs.getInt(KEY_TILT_COOLDOWN, 380)));
+        // Match the PC launcher contract: diagnostics are opt-in, while the
+        // performance/rendering path remains enabled by the selected preset.
+        showFps = prefs.getBoolean(KEY_FPS, false);
         debugLogs = prefs.getBoolean(KEY_LOGS, false);
         dumpFrames = prefs.getBoolean(KEY_DUMPS, false);
         pcCompat = prefs.getBoolean(KEY_COMPAT, true);
         fastPresent = prefs.getBoolean(KEY_FAST_PRESENT, true);
         skipReadback = prefs.getBoolean(KEY_SKIP_READBACK, true);
         gpuPresentCopy = prefs.getBoolean(KEY_GPU_COPY, true);
+        bundledTextures = prefs.getBoolean(KEY_TEXTURES, BuildConfig.BUNDLED_TEXTURES);
         fsr3AhbEnabled = prefs.getBoolean(KEY_FSR3_AHB, false);
         fsr3ForceEnabled = prefs.getBoolean(KEY_FSR3_FORCE, false);
         fsr3FgEnabled = false;
@@ -212,6 +245,9 @@ public class LauncherActivity extends Activity {
         Intent launchIntent = getIntent();
         if (launchIntent.getBooleanExtra("autorun", false)) {
             qualityPreset = PRESET_CUSTOM;
+            tiltPulseEnabled = launchIntent.getBooleanExtra("tilt_pulse", tiltPulseEnabled);
+            tiltPulseThresholdMilliG = TiltGestureSettings.clamp(launchIntent.getIntExtra("tilt_threshold_mg", launchIntent.hasExtra("tilt_threshold_g100") ? launchIntent.getIntExtra("tilt_threshold_g100", 32) * 10 : tiltPulseThresholdMilliG));
+            tiltPulseCooldownMs = Math.max(100, Math.min(1000, launchIntent.getIntExtra("tilt_cooldown_ms", tiltPulseCooldownMs)));
             startGameWithConfig(
                     launchIntent.getBooleanExtra("show_fps", false),
                     launchIntent.getBooleanExtra("debug_logs", false),
@@ -226,6 +262,8 @@ public class LauncherActivity extends Activity {
                     launchIntent.getIntExtra("present_fsr", 0),
                     launchIntent.getBooleanExtra("aa", false),
                     launchIntent.getIntExtra("present_sharpen", 0),
+                    launchIntent.getBooleanExtra("safe_black_floor", false),
+                    launchIntent.getIntExtra("safe_black_gray", 75),
                     launchIntent.getBooleanExtra("stats_log", false),
                     launchIntent.getBooleanExtra("fsr3_ahb_probe", false),
                     launchIntent.getBooleanExtra("fsr3_fg", false),
@@ -267,7 +305,7 @@ public class LauncherActivity extends Activity {
             try (FileOutputStream output = new FileOutputStream(new File(base, "import-test-result.json"))) {
                 output.write(result.toString().getBytes(StandardCharsets.UTF_8)); output.getFD().sync();
             } catch (Exception error) { android.util.Log.e("SaveLab", "Could not record import probe", error); }
-            String message = result.optString("status").equals("ok") ? "存档导入测试完成" : "存档导入被拒绝：" + result.optString("error");
+            String message = result.optString("status").equals("ok") ? L("存档导入测试完成") : L("存档导入被拒绝：") + result.optString("error");
             runOnUiThread(() -> updateSaveImportStatus(message, COLOR_TEXT));
         }, "save-lab-import-probe").start();
     }
@@ -279,7 +317,7 @@ public class LauncherActivity extends Activity {
             return;
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-            updateSaveImportStatus(requestCode == REQUEST_EXPORT_SAVE_ZIP ? "已取消 ZIP 导出。" : "已取消 ZIP 导入。", COLOR_MUTED);
+            updateSaveImportStatus(requestCode == REQUEST_EXPORT_SAVE_ZIP ? L("已取消 ZIP 导出。") : L("已取消 ZIP 导入。"), COLOR_MUTED);
             return;
         }
         if (requestCode == REQUEST_EXPORT_SAVE_ZIP) exportSaveZip(data.getData());
@@ -292,15 +330,15 @@ public class LauncherActivity extends Activity {
         String stamp = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date());
         intent.putExtra(Intent.EXTRA_TITLE, "DeadSpace-Three-Slots-" + stamp + ".zip");
         try { startActivityForResult(intent, REQUEST_EXPORT_SAVE_ZIP); }
-        catch (ActivityNotFoundException error) { updateSaveImportStatus("当前设备没有可用的文件选择器。", COLOR_WARN); }
+        catch (ActivityNotFoundException error) { updateSaveImportStatus(L("当前设备没有可用的文件选择器。"), COLOR_WARN); }
     }
 
     private void exportSaveZip(Uri uri) {
-        updateSaveImportStatus("正在校验并导出三个槽位……", COLOR_ACCENT);
+        updateSaveImportStatus(L("正在校验并导出三个槽位……"), COLOR_ACCENT);
         new Thread(() -> {
             try { SaveArchiveImporter.exportZip(this, uri);
-                runOnUiThread(() -> updateSaveImportStatus("已导出一个 ZIP，包含全部现有槽位和公共设置。可用 ZIP 导入恢复。", COLOR_ACCENT));
-            } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus("导出失败：" + error.getMessage(), COLOR_WARN)); }
+                runOnUiThread(() -> updateSaveImportStatus(L("已导出一个 ZIP，包含全部现有槽位和公共设置。可用 ZIP 导入恢复。"), COLOR_ACCENT));
+            } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus(L("导出失败：") + error.getMessage(), COLOR_WARN)); }
         }, "save-archive-export").start();
     }
 
@@ -314,7 +352,7 @@ public class LauncherActivity extends Activity {
         try {
             startActivityForResult(intent, REQUEST_IMPORT_SAVE_ZIP);
         } catch (ActivityNotFoundException error) {
-            updateSaveImportStatus("当前设备没有可用的文件选择器。", COLOR_WARN);
+            updateSaveImportStatus(L("当前设备没有可用的文件选择器。"), COLOR_WARN);
         }
     }
 
@@ -323,40 +361,40 @@ public class LauncherActivity extends Activity {
             try {
                 File[] files = SaveArchiveImporter.backups(this);
                 runOnUiThread(() -> {
-                    if (files.length == 0) { updateSaveImportStatus("尚无自动备份。导入或编辑存档时会自动生成。", COLOR_MUTED); return; }
+                    if (files.length == 0) { updateSaveImportStatus(L("尚无自动备份。导入或编辑存档时会自动生成。"), COLOR_MUTED); return; }
                     String[] labels = new String[files.length];
                     java.text.DateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault());
                     for (int i = 0; i < files.length; i++) labels[i] = format.format(new java.util.Date(files[i].lastModified())) + "\n" + files[i].getName();
-                    new AlertDialog.Builder(this).setTitle("恢复自动备份 · 三个槽位")
-                        .setItems(labels, (dialog, index) -> new AlertDialog.Builder(this).setTitle("恢复三个槽位？")
-                            .setMessage("将恢复此备份内的全部槽位和公共设置。当前存档会再次自动备份。\n" + files[index].getName())
-                            .setNegativeButton("取消", null).setPositiveButton("恢复", (confirm, which) -> {
-                                updateSaveImportStatus("正在校验并恢复备份……", COLOR_ACCENT);
+                    new AlertDialog.Builder(this).setTitle(L("恢复自动备份 · 三个槽位"))
+                        .setItems(labels, (dialog, index) -> new AlertDialog.Builder(this).setTitle(L("恢复三个槽位？"))
+                            .setMessage(L("将恢复此备份内的全部槽位和公共设置。当前存档会再次自动备份。\n") + files[index].getName())
+                            .setNegativeButton(L("取消"), null).setPositiveButton(L("恢复"), (confirm, which) -> {
+                                updateSaveImportStatus(L("正在校验并恢复备份……"), COLOR_ACCENT);
                                 new Thread(() -> {
                                     try { SaveArchiveImporter.restoreBackup(this, files[index].getName());
-                                        runOnUiThread(() -> updateSaveImportStatus("已恢复三个槽位；恢复前的存档已另行备份。", COLOR_ACCENT));
-                                    } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus("恢复失败：" + error.getMessage(), COLOR_WARN)); }
+                                        runOnUiThread(() -> updateSaveImportStatus(L("已恢复三个槽位；恢复前的存档已另行备份。"), COLOR_ACCENT));
+                                    } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus(L("恢复失败：") + error.getMessage(), COLOR_WARN)); }
                                 }, "save-backup-restore").start();
-                            }).show()).setNegativeButton("关闭", null).show();
+                            }).show()).setNegativeButton(L("关闭"), null).show();
                 });
-            } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus("无法读取备份：" + error.getMessage(), COLOR_WARN)); }
+            } catch (Exception error) { runOnUiThread(() -> updateSaveImportStatus(L("无法读取备份：") + error.getMessage(), COLOR_WARN)); }
         }, "save-backup-list").start();
     }
 
     private void importSaveZip(Uri uri) {
-        updateSaveImportStatus("正在校验并导入 ZIP，请勿关闭启动器……", COLOR_ACCENT);
+        updateSaveImportStatus(L("正在校验并导入 ZIP，请勿关闭启动器……"), COLOR_ACCENT);
         new Thread(() -> {
             try {
                 SaveArchiveCore.Result result = SaveArchiveImporter.importZip(this, uri);
-                String message = "已导入 " + result.importedFiles + " 个 .sb 存档。";
-                message += "\n依赖文件：" + (result.totalFiles - result.importedFiles) + " 个。";
+                String message = L("已导入 ") + result.importedFiles + L(" 个 .sb 存档。");
+                message += L("\n依赖文件：") + (result.totalFiles - result.importedFiles) + L(" 个。");
                 if (result.backup != null) {
-                    message += "\n导入前备份：" + result.backup.getName();
+                    message += L("\n导入前备份：") + result.backup.getName();
                 }
                 String finalMessage = message;
                 runOnUiThread(() -> updateSaveImportStatus(finalMessage, COLOR_TEXT));
             } catch (Exception error) {
-                String message = "导入失败："
+                String message = L("导入失败：")
                         + (error.getMessage() == null ? error.getClass().getSimpleName()
                         : error.getMessage());
                 runOnUiThread(() -> {
@@ -375,6 +413,8 @@ public class LauncherActivity extends Activity {
         saveImportStatus.setTextColor(color);
     }
 
+    private static String L(String value) { return LauncherLanguage.text(value); }
+
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -387,17 +427,18 @@ public class LauncherActivity extends Activity {
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
 
-        TextView eyebrow = text("DEAD SPACE  /  IOS PORT  /  1.3.34", 11, COLOR_ACCENT, true);
+        content.addView(text(L("00 关于"), 18, COLOR_ACCENT, true));
+        TextView eyebrow = text("DEAD SPACE MOBILE  /  IOS HD PORT  /  1.3.34", 11, COLOR_ACCENT, true);
         eyebrow.setLetterSpacing(0.22f);
         eyebrow.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         content.addView(eyebrow);
 
-        TextView title = text("死亡空间IOS移植版", 30, COLOR_TEXT, true);
+        TextView title = text(L("死亡空间移动版（IOS端高清移植）"), 30, COLOR_TEXT, true);
         title.setPadding(0, dp(7), 0, dp(3));
         content.addView(title);
 
         TextView subtitle = text(
-                "让我们把泰坦空间站烧成灰。检查画质与存档后开始游戏。",
+                L("快行动，破坏者！\n让我们把泰坦空间站烧成灰！"),
                 14, COLOR_MUTED, false);
         subtitle.setPadding(0, 0, 0, dp(16));
         content.addView(subtitle);
@@ -433,16 +474,16 @@ public class LauncherActivity extends Activity {
         heroTitle.setLetterSpacing(0.08f);
         heroTitle.setPadding(0, dp(2), 0, 0);
         heroCopy.addView(heroTitle);
-        TextView heroName = text("死亡空间IOS移植版", 17, COLOR_TEXT, true);
+        TextView heroName = text(L("死亡空间移动版（IOS端高清移植）"), 17, COLOR_TEXT, true);
         heroCopy.addView(heroName);
         TextView heroBody = text(
-                "原版 1.3.34 内容 · PC 主线修复 · Android 触摸与横屏适配",
+                L("原版 1.3.34 内容 · PC 主线修复 · Android 触摸与横屏适配"),
                 12, COLOR_MUTED, false);
         heroBody.setPadding(0, dp(5), 0, dp(8));
         heroCopy.addView(heroBody);
         LinearLayout chips = new LinearLayout(this);
         chips.setOrientation(LinearLayout.HORIZONTAL);
-        chips.addView(chip("原生 3×"));
+        chips.addView(chip(L("原生 3×")));
         chips.addView(chip("FXAA + CAS"));
         chips.addView(chip("PC FIX"));
         heroCopy.addView(chips);
@@ -458,14 +499,10 @@ public class LauncherActivity extends Activity {
         creditsLabel.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         creditsLabel.setGravity(Gravity.END);
         credits.addView(creditsLabel);
-        TextView keyboardCredit = text("键鼠测试：天雷本雷", 11, COLOR_TEXT, false);
-        keyboardCredit.setGravity(Gravity.END);
-        keyboardCredit.setPadding(0, dp(5), 0, 0);
-        credits.addView(keyboardCredit);
-        TextView remainingCredit = text("剩余全部工作：SomJs", 11, COLOR_MUTED, false);
-        remainingCredit.setGravity(Gravity.END);
-        remainingCredit.setPadding(0, dp(2), 0, 0);
-        credits.addView(remainingCredit);
+        TextView projectCredit = text(L("死亡空间移动版（IOS端高清移植）") + " · SomJs", 10, COLOR_TEXT, false);
+        projectCredit.setGravity(Gravity.END);
+        projectCredit.setPadding(0, dp(5), 0, 0);
+        credits.addView(projectCredit);
         heroRow.addView(credits, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -476,31 +513,49 @@ public class LauncherActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        TextView creditsPanel = text(
+                L("死亡空间移动版（IOS端高清移植）") + "\n" +
+                        L("基于 touchHLE 与 HyperHLE\n") +
+                        L("本项目链接当前可能暂时处于私有状态\n") +
+                        L("SomJs：项目主要开发、手柄游玩测试、骁龙 Android 设备游玩测试\n") +
+                        L("lxyun_2（腹黑小喵）：超级校对、超级测试\n") +
+                        L("MisakaCharlotte（是的呀啊）：超级校对、超级测试\n") +
+                        L("特洛克·洛克莱斯：超级检查测试\n") +
+                        L("天雷本雷：键鼠游玩测试、天玑 Android 设备游玩测试\n") +
+                        L("豆沙包里有磁：键鼠测试（顶着极低的全转储帧率）\n") +
+                        L("问题反馈：https://github.com/SomJsA/DeadSpaceMobile-Community/issues\n") +
+                        L("项目 / Project：https://github.com/SomJsA/HyperHLE_ds_compat-android\n") +
+                        L("上游 / Upstream：https://github.com/touchHLE/touchHLE · https://github.com/HyperHLE/HyperHLE\n") +
+                        L("SomJs 渠道：Bilibili https://space.bilibili.com/34237026 · Reddit https://www.reddit.com/user/SomJs/ · GitHub https://github.com/SomJsA\n") +
+                        L("死亡空间贴吧汉化组：https://tieba.baidu.com/wxf/341915?kw=%E6%AD%BB%E4%BA%A1%E7%A9%BA%E9%97%B4&fr=sharewise"),
+                11, COLOR_TEXT, false);
+        creditsPanel.setAutoLinkMask(Linkify.WEB_URLS);
+        creditsPanel.setLinksClickable(true);
+        creditsPanel.setMovementMethod(LinkMovementMethod.getInstance());
+        creditsPanel.setLinkTextColor(COLOR_ACCENT);
+        creditsPanel.setBackground(panelBackground(COLOR_PANEL, COLOR_LINE));
+        creditsPanel.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams creditsPanelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        creditsPanelParams.topMargin = dp(12);
+        creditsPanelParams.bottomMargin = dp(10);
+        content.addView(creditsPanel, creditsPanelParams);
+        GithubUpdates.add(this, content);
+
         LinearLayout qualityBlock = new LinearLayout(this);
         qualityBlock.setOrientation(LinearLayout.VERTICAL);
         content.addView(qualityBlock, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        CheckBox overlayToggle = addToggle(qualityBlock, "高清图文组件", "章节、任务追踪与字幕的总开关；样式在外部预览器调整。",
+        CheckBox overlayToggle = addToggle(qualityBlock, L("高清图文组件"), L("章节、任务追踪与字幕的总开关；样式在外部预览器调整。"),
                 prefs.getBoolean("overlay_enabled", true));
         overlayToggle.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("overlay_enabled", checked).apply());
 
-        addSection(qualityBlock, "02  /  画质模式");
-        Button advice=button("本机自检与画质建议",false);
-        advice.setOnClickListener(v->{
-            Intent selected=new Intent();selected.putExtra("scale_hack",scaleHack).putExtra("fps_cap",fpsCap).putExtra("present_fsr",fsrMode).putExtra("aa",aaEnabled).putExtra("gpu_present_copy",gpuPresentCopy).putExtra("shadow_boost",shadowBoostPercent);
-            selected.putExtra("fast_present",fastPresent).putExtra("skip_readback",skipReadback).putExtra("pc_compat",pcCompat).putExtra("viewport_stretch",stretchViewport)
-                .putExtra("present_sharpen",sharpenTenths).putExtra("overlay_enabled",prefs.getBoolean("overlay_enabled",true))
-                .putExtra("fsr3_ahb_probe",fsr3AhbEnabled).putExtra("fsr3_force",fsr3ForceEnabled).putExtra("fsr3_fg",fsr3FgEnabled&&fsr3AhbEnabled)
-                .putExtra("fsr3_real_depth",fsr3DepthEnabled&&fsr3AhbEnabled).putExtra("fsr3_gpu_depth",fsr3GpuDepthEnabled&&fsr3AhbEnabled&&fsr3DepthEnabled)
-                .putExtra("fsr3_async",fsr3AsyncEnabled&&fsr3AhbEnabled).putExtra("fsr3_direct_output",fsr3DirectOutputEnabled&&fsr3AhbEnabled&&fsr3AsyncEnabled);
-            StartupReview.showAdvice(this,scaleHack,StartupReview.settingsKey(selected),()->{benchmarkNextStart=true;Toast.makeText(this,"下次启动将采集约30秒有效场景。",Toast.LENGTH_LONG).show();});
-        });
-        qualityBlock.addView(advice,new LinearLayout.LayoutParams(-1,dp(48)));
+        addSection(qualityBlock, L("02  /  画质模式"));
         TextView presetHint = text(
-                "推荐：原生 3× + FXAA + CAS 0.5，FSR3 关闭。"
-                        + "先选常用预设；需要逐项调整时再进入自定义。",
+                L("推荐：原生 3× + FXAA + CAS 0.5，FSR3 关闭。")
+                        + L("先选常用预设；需要逐项调整时再进入自定义。"),
                 13, COLOR_MUTED, false);
         presetHint.setPadding(0, dp(4), 0, dp(8));
         qualityBlock.addView(presetHint);
@@ -526,11 +581,115 @@ public class LauncherActivity extends Activity {
             updateChoiceLabels();
             prefs.edit().putInt(KEY_SHADOW_BOOST, shadowBoostPercent).apply();
         });
-        TextView shadowHint = text("已弃用，默认 0%；会放大暗部色阶和色偏，无法恢复纯黑细节。仅保留作对照。", 12, COLOR_MUTED, false);
+        TextView shadowHint = text(L("已弃用，默认 0%；会放大暗部色阶和色偏，无法恢复纯黑细节。仅保留作对照。"), 12, COLOR_MUTED, false);
         shadowHint.setPadding(dp(8), 0, dp(8), dp(8));
         qualityBlock.addView(shadowHint);
 
-        advancedButton = button("高级参数：展开（自定义）   ›", false);
+        addSection(qualityBlock, L("护眼模式（实验性）"));
+        safeBlackFloorToggle = addToggle(qualityBlock,
+                L("将接近黑色替换为灰色"),
+                L("原游戏存在大量整屏明暗跳变；不调节时可能难以忍受，灰度过高会把黑场抬成发白。")
+                        + L("默认关闭，不改变深度、排序或输入。"),
+                safeBlackFloor);
+        safeBlackFloorToggle.setOnCheckedChangeListener((button, checked) -> {
+            safeBlackFloor = checked;
+            updateSafeBlackGrayUi();
+            onQualitySettingChanged();
+        });
+        LinearLayout grayRow = new LinearLayout(this);
+        grayRow.setOrientation(LinearLayout.HORIZONTAL);
+        grayRow.setGravity(Gravity.CENTER_VERTICAL);
+        grayRow.setPadding(dp(8), dp(2), dp(8), dp(8));
+        TextView grayLabel = text(L("黑色替换灰度（推荐 / 默认 75 / 255）"), 13, COLOR_TEXT, true);
+        grayRow.addView(grayLabel, new LinearLayout.LayoutParams(0, dp(44), 1.0f));
+        safeBlackGrayValue = text(safeBlackGray + " / 255", 13, COLOR_ACCENT, true);
+        safeBlackGrayValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        grayRow.addView(safeBlackGrayValue, new LinearLayout.LayoutParams(dp(90), dp(44)));
+        qualityBlock.addView(grayRow);
+        safeBlackGraySeek = new SeekBar(this);
+        safeBlackGraySeek.setMax(160);
+        safeBlackGraySeek.setProgress(safeBlackGray);
+        safeBlackGraySeek.setContentDescription(L("黑色替换灰度"));
+        safeBlackGraySeek.setPadding(dp(8), 0, dp(8), dp(8));
+        qualityBlock.addView(safeBlackGraySeek, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        TextView grayHint = text(L("0 = 黑色；160 = 较亮灰色。建议从 75 附近逐步调整。只在最终 GPU 显示层处理，不回读整帧。"), 12, COLOR_MUTED, false);
+        grayHint.setPadding(dp(8), 0, dp(8), dp(8));
+        qualityBlock.addView(grayHint);
+        safeBlackGraySeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                safeBlackGray = Math.max(0, Math.min(160, progress));
+                if (safeBlackGrayValue != null) safeBlackGrayValue.setText(safeBlackGray + " / 255");
+            }
+            public void onStartTrackingTouch(SeekBar seekBar) { }
+            public void onStopTrackingTouch(SeekBar seekBar) { onQualitySettingChanged(); }
+        });
+        updateSafeBlackGrayUi();
+
+        addSection(qualityBlock, L("Android 输入"));
+        tiltPulseToggle = addToggle(qualityBlock,
+                L("侧向切换模式冷却（Android）"),
+                L("开启：一次较强侧向偏转只触发一次主/副模式切换，设备回正后才可再次触发；")
+                        + L("关闭：回到原生连续加速度输入语义。与护眼模式、画质预设和横屏确认独立。"),
+                tiltPulseEnabled);
+        tiltPulseToggle.setOnCheckedChangeListener((button, checked) -> {
+            tiltPulseEnabled = checked;
+            saveCurrentSettings();
+        });
+        LinearLayout tiltThresholdRow = new LinearLayout(this);
+        tiltThresholdRow.setOrientation(LinearLayout.HORIZONTAL);
+        tiltThresholdRow.setGravity(Gravity.CENTER_VERTICAL);
+        tiltThresholdRow.setPadding(dp(8), dp(2), dp(8), 0);
+        tiltThresholdRow.addView(text(L("侧向强度阈值"), 13, COLOR_TEXT, true), new LinearLayout.LayoutParams(0, dp(40), 1.0f));
+        tiltThresholdValue = text("", 13, COLOR_ACCENT, true);
+        tiltThresholdValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        tiltThresholdRow.addView(tiltThresholdValue, new LinearLayout.LayoutParams(dp(105), dp(40)));
+        qualityBlock.addView(tiltThresholdRow);
+        tiltThresholdSeek = new SeekBar(this);
+        tiltThresholdSeek.setMax(720);
+        tiltThresholdSeek.setProgress(tiltPulseThresholdMilliG - 80);
+        tiltThresholdSeek.setContentDescription(L("侧向切换强度阈值"));
+        tiltThresholdSeek.setPadding(dp(8), 0, dp(8), 0);
+        qualityBlock.addView(tiltThresholdSeek, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+        LinearLayout tiltCooldownRow = new LinearLayout(this);
+        tiltCooldownRow.setOrientation(LinearLayout.HORIZONTAL);
+        tiltCooldownRow.setGravity(Gravity.CENTER_VERTICAL);
+        tiltCooldownRow.setPadding(dp(8), dp(2), dp(8), 0);
+        tiltCooldownRow.addView(text(L("侧向切换冷却时间"), 13, COLOR_TEXT, true), new LinearLayout.LayoutParams(0, dp(40), 1.0f));
+        tiltCooldownValue = text("", 13, COLOR_ACCENT, true);
+        tiltCooldownValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        tiltCooldownRow.addView(tiltCooldownValue, new LinearLayout.LayoutParams(dp(105), dp(40)));
+        qualityBlock.addView(tiltCooldownRow);
+        tiltCooldownSeek = new SeekBar(this);
+        tiltCooldownSeek.setMax(900);
+        tiltCooldownSeek.setProgress(tiltPulseCooldownMs - 100);
+        tiltCooldownSeek.setContentDescription(L("侧向切换冷却时间"));
+        tiltCooldownSeek.setPadding(dp(8), 0, dp(8), 0);
+        qualityBlock.addView(tiltCooldownSeek, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+        TextView tiltHint = text(L("强度越高越不易误触；冷却越长，连续侧向偏转越不容易重复切换。默认 0.128G / 380ms。"), 12, COLOR_MUTED, false);
+        tiltHint.setPadding(dp(8), 0, dp(8), dp(8));
+        qualityBlock.addView(tiltHint);
+        updateTiltPulseUi();
+        tiltThresholdSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                tiltPulseThresholdMilliG = TiltGestureSettings.clamp(progress + 80);
+                updateTiltPulseUi();
+            }
+            public void onStartTrackingTouch(SeekBar seekBar) { }
+            public void onStopTrackingTouch(SeekBar seekBar) { saveCurrentSettings(); }
+        });
+        tiltCooldownSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                tiltPulseCooldownMs = Math.max(100, Math.min(1000, progress + 100));
+                updateTiltPulseUi();
+            }
+            public void onStartTrackingTouch(SeekBar seekBar) { }
+            public void onStopTrackingTouch(SeekBar seekBar) { saveCurrentSettings(); }
+        });
+
+        advancedButton = button(L("高级参数：展开（自定义）   ›"), false);
         advancedButton.setOnClickListener(v -> {
             advancedExpanded = !advancedExpanded;
             updateAdvancedVisibility();
@@ -553,67 +712,67 @@ public class LauncherActivity extends Activity {
         fsr3Status.setPadding(0, dp(4), 0, dp(8));
         advancedContainer.addView(fsr3Status);
         addInfoCard(advancedContainer,
-                "当前是什么状态",
-                "这是带真实 D16 深度、异步一帧流水线的 FSR3.1 实验路径，仍不是完整时间超分。\n"
-                        + "已接通：RGBA8 颜色、游戏深度、AHB/EGLImage、Vulkan 外部内存和超分输出。\n"
-                        + "仍缺失：真实运动向量、相机 jitter、有效历史帧和 HUD/UI 分层。\n"
-                        + "异步模式会固定增加约 1 帧显示延迟；它不是帧生成，也不能对外宣称完整 FSR3。",
+                L("当前是什么状态"),
+                L("这是带真实 D16 深度、异步一帧流水线的 FSR3.1 实验路径，仍不是完整时间超分。\n")
+                        + L("已接通：RGBA8 颜色、游戏深度、AHB/EGLImage、Vulkan 外部内存和超分输出。\n")
+                        + L("仍缺失：真实运动向量、相机 jitter、有效历史帧和 HUD/UI 分层。\n")
+                        + L("异步模式会固定增加约 1 帧显示延迟；它不是帧生成，也不能对外宣称完整 FSR3。"),
                 COLOR_WARN);
         addInfoCard(advancedContainer,
-                "Adreno 740 实机基线与优化结果",
-                "固定第 8 章、2376x1080 Surface、录像后段中位数：\n"
-                        + "原生 960x1440：60.2 FPS / 16.56 ms / 1% low 41.8。\n"
-                        + "同步 FSR 640x960：21.1 FPS / 49.26 ms / 1% low 5.7。\n"
-                        + "异步 FSR 640x960：50.5 FPS / 19.84 ms / 1% low 38.1。\n"
-                        + "异步 FSR 960x1440：44.8 FPS / 22.17 ms / 1% low 35.4。\n"
-                        + "PSS 约 2.8 GB；直写 2× 曾异常到 4.37 GB。"
-                        + "仅 Adreno 740 有这组证据，未知 GPU 必须回退原生。",
+                L("Adreno 740 实机基线与优化结果"),
+                L("固定第 8 章、2376x1080 Surface、录像后段中位数：\n")
+                        + L("原生 960x1440：60.2 FPS / 16.56 ms / 1% low 41.8。\n")
+                        + L("同步 FSR 640x960：21.1 FPS / 49.26 ms / 1% low 5.7。\n")
+                        + L("异步 FSR 640x960：50.5 FPS / 19.84 ms / 1% low 38.1。\n")
+                        + L("异步 FSR 960x1440：44.8 FPS / 22.17 ms / 1% low 35.4。\n")
+                        + L("PSS 约 2.8 GB；直写 2× 曾异常到 4.37 GB。")
+                        + L("仅 Adreno 740 有这组证据，未知 GPU 必须回退原生。"),
                 COLOR_WARN);
         addInfoCard(advancedContainer,
-                "兼容门槛",
-                "要求 Android 12+、arm64-v8a、Vulkan 1.2+ Compute、AHB 外部内存、"
-                        + "EGL 外部图像和 EGL_KHR_gl_renderbuffer_image。\n"
-                        + "当前只有 Adreno 740 有真实深度和 gameplay 证据；未知 GPU 应回退原生。\n"
-                        + "游戏固定横屏，用户旋转不属于验收需求。",
+                L("兼容门槛"),
+                L("要求 Android 12+、arm64-v8a、Vulkan 1.2+ Compute、AHB 外部内存、")
+                        + L("EGL 外部图像和 EGL_KHR_gl_renderbuffer_image。\n")
+                        + L("当前只有 Adreno 740 有真实深度和 gameplay 证据；未知 GPU 应回退原生。\n")
+                        + L("游戏固定横屏，用户旋转不属于验收需求。"),
                 COLOR_ACCENT);
         fsr3ForceToggle = addToggle(advancedContainer,
-                "强制启用 FSR3（高风险）",
-                "即使 Vulkan 1.2 / AHB / EGLImage 预检失败也把开关传给原生层。"
-                        + "用于收集驱动实测证据，不保证可运行；出现黑屏或闪退请关闭。",
+                L("强制启用 FSR3（高风险）"),
+                L("即使 Vulkan 1.2 / AHB / EGLImage 预检失败也把开关传给原生层。")
+                        + L("用于收集驱动实测证据，不保证可运行；出现黑屏或闪退请关闭。"),
                 fsr3ForceEnabled);
         fsr3AhbToggle = addToggle(advancedContainer,
-                "FSR3.1 Vulkan 超分（实验）",
-                "总开关。把游戏 GLES 颜色通过共享 AHB 送入 FSR3.1 Vulkan。"
-                        + "关闭后立即回到原生呈现；只有同时开启下面的真实深度，"
-                        + "FSR 才会收到 depth=true。",
+                L("FSR3.1 Vulkan 超分（实验）"),
+                L("总开关。把游戏 GLES 颜色通过共享 AHB 送入 FSR3.1 Vulkan。")
+                        + L("关闭后立即回到原生呈现；只有同时开启下面的真实深度，")
+                        + L("FSR 才会收到 depth=true。"),
                 fsr3AhbEnabled);
         fsr3FgToggle = addToggle(advancedContainer,
-                "FSR3 帧生成（暂不可用）",
-                "没有真实 per-pixel motion、低延迟呈现和 UI 分层。"
-                        + "普通开关会安全拒绝，不能用它冒充帧数提升。",
+                L("FSR3 帧生成（暂不可用）"),
+                L("没有真实 per-pixel motion、低延迟呈现和 UI 分层。")
+                        + L("普通开关会安全拒绝，不能用它冒充帧数提升。"),
                 false);
         fsr3DepthToggle = addToggle(advancedContainer,
-                "真实深度输入 D16（实验）",
-                "通过 EGLImage 读取游戏深度并上传给 FSR3。"
-                        + "该路径每帧有 CPU 读回开销，但缺少它时 depth=false，"
-                        + "只能验证呈现链路，不能算完整超分输入。",
+                L("真实深度输入 D16（实验）"),
+                L("通过 EGLImage 读取游戏深度并上传给 FSR3。")
+                        + L("该路径每帧有 CPU 读回开销，但缺少它时 depth=false，")
+                        + L("只能验证呈现链路，不能算完整超分输入。"),
                 fsr3DepthEnabled);
         fsr3GpuDepthToggle = addToggle(advancedContainer,
-                "GPU 深度直通（实验）",
-                "通过 EGLImage 和 glBlitFramebuffer 将 D16 深度写入 AHardwareBuffer，"
-                        + "避免每帧 CPU glReadPixels。仅 Adreno 740 已验证；失败时回退 CPU。",
+                L("GPU 深度直通（实验）"),
+                L("通过 EGLImage 和 glBlitFramebuffer 将 D16 深度写入 AHardwareBuffer，")
+                        + L("避免每帧 CPU glReadPixels。仅 Adreno 740 已验证；失败时回退 CPU。"),
                 fsr3GpuDepthEnabled);
         fsr3AsyncToggle = addToggle(advancedContainer,
-                "异步 FSR 流水线（实验）",
-                "在 CPU 侧不等当前 FSR GPU 完成：提交当前帧后显示上一帧已完成的 FSR 输出，"
-                        + "让当前游戏渲染与上一帧超分重叠。代价是固定增加约 1 帧显示延迟；"
-                        + "首帧和异常时自动回退原生。默认关闭，帧生成/诊断读回开启时也不使用。",
+                L("异步 FSR 流水线（实验）"),
+                L("在 CPU 侧不等当前 FSR GPU 完成：提交当前帧后显示上一帧已完成的 FSR 输出，")
+                        + L("让当前游戏渲染与上一帧超分重叠。代价是固定增加约 1 帧显示延迟；")
+                        + L("首帧和异常时自动回退原生。默认关闭，帧生成/诊断读回开启时也不使用。"),
                 fsr3AsyncEnabled);
         fsr3DirectOutputToggle = addToggle(advancedContainer,
-                "FSR 直接写输出 AHB（实验）",
-                "让 FSR3 直接写入用于 GLES 呈现的 AHardwareBuffer，"
-                        + "省掉 1620×1080 中间纹理到输出 AHB 的全画面复制。"
-                        + "依赖异步流水线；驱动不支持外部存储图像时自动回退。默认关闭。",
+                L("FSR 直接写输出 AHB（实验）"),
+                L("让 FSR3 直接写入用于 GLES 呈现的 AHardwareBuffer，")
+                        + L("省掉 1620×1080 中间纹理到输出 AHB 的全画面复制。")
+                        + L("依赖异步流水线；驱动不支持外部存储图像时自动回退。默认关闭。"),
                 fsr3DirectOutputEnabled);
         fsr3SelectionStatus = text("", 13, COLOR_WARN, false);
         fsr3SelectionStatus.setLineSpacing(0f, 1.08f);
@@ -631,7 +790,7 @@ public class LauncherActivity extends Activity {
             fsr3ForceEnabled = checked;
             if (checked && !fsr3Supported) {
                 Toast.makeText(this,
-                        "已允许 FSR3 强开：此路径仅用于实验，可能黑屏或闪退。",
+                        L("已允许 FSR3 强开：此路径仅用于实验，可能黑屏或闪退。"),
                         Toast.LENGTH_LONG).show();
             }
             if (!checked && !fsr3Supported) {
@@ -668,10 +827,10 @@ public class LauncherActivity extends Activity {
         });
         updateFsr3SelectionStatus();
 
-        addSection(advancedContainer, "性能");
+        addSection(advancedContainer, L("性能"));
         fpsToggle = addToggle(advancedContainer,
-                "显示实际 FPS",
-                "基于 presentRenderbuffer 的真实帧计数，显示 FPS、平均帧时间和累计帧号。",
+                L("显示实际 FPS"),
+                L("基于 presentRenderbuffer 的真实帧计数，显示 FPS、平均帧时间和累计帧号。"),
                 showFps);
         fpsToggle.setOnCheckedChangeListener((button, checked) -> {
             showFps = checked;
@@ -693,31 +852,41 @@ public class LauncherActivity extends Activity {
             onQualitySettingChanged();
         });
         fastPresentToggle = addToggle(advancedContainer,
-                "快速呈现",
-                "绕过 glReadPixels 合成路径；当前 OnePlus 设备已验证稳定，若其他设备闪烁请关闭。",
+                L("快速呈现"),
+                L("绕过 glReadPixels 合成路径；当前 OnePlus 设备已验证稳定，若其他设备闪烁请关闭。"),
                 fastPresent);
         fastPresentToggle.setOnCheckedChangeListener((button, checked) -> {
             fastPresent = checked;
             onQualitySettingChanged();
         });
         skipReadbackToggle = addToggle(advancedContainer,
-                "跳过读回 Finish",
-                "省掉每帧 glFinish；当前设备已验证画面正常，若出现黑帧请关闭。",
+                L("跳过读回 Finish"),
+                L("省掉每帧 glFinish；当前设备已验证画面正常，若出现黑帧请关闭。"),
                 skipReadback);
         skipReadbackToggle.setOnCheckedChangeListener((button, checked) -> {
             skipReadback = checked;
             onQualitySettingChanged();
         });
         gpuCopyToggle = addToggle(advancedContainer,
-                "GPU 复制呈现（实验）",
-                "用 GPU 复制 renderbuffer 代替每帧 CPU 读回；失败时关闭并回退。",
+                L("GPU 复制呈现（实验）"),
+                L("用 GPU 复制 renderbuffer 代替每帧 CPU 读回；失败时关闭并回退。"),
                 gpuPresentCopy);
         gpuCopyToggle.setOnCheckedChangeListener((button, checked) -> {
             gpuPresentCopy = checked;
             onQualitySettingChanged();
         });
+        if (BuildConfig.BUNDLED_TEXTURES) {
+            textureToggle = addToggle(advancedContainer,
+                    L("内置高清纹理（4×）"),
+                    L("当前安装包包含 4× 纹理；会显著增加显存与加载压力。默认开启，低端设备建议关闭并降到性能优先。"),
+                    bundledTextures);
+            textureToggle.setOnCheckedChangeListener((button, checked) -> {
+                bundledTextures = checked;
+                saveCurrentSettings();
+            });
+        }
 
-        addSection(advancedContainer, "FSR / 抗锯齿");
+        addSection(advancedContainer, L("FSR / 抗锯齿"));
         fsrButton = addCycleButton(advancedContainer, "", v -> {
             fsrMode = fsrMode >= 2 ? 0 : fsrMode + 1;
             updateChoiceLabels();
@@ -734,33 +903,33 @@ public class LauncherActivity extends Activity {
             onQualitySettingChanged();
         });
         TextView qualityHint = text(
-                "FSR、FXAA 与 CAS 会提升清晰度，但会增加 GPU 负载；速度优先时请保持关闭。",
+                L("FSR、FXAA 与 CAS 会提升清晰度，但会增加 GPU 负载；速度优先时请保持关闭。"),
                 13, COLOR_MUTED, false);
         qualityHint.setPadding(0, dp(4), 0, dp(8));
         advancedContainer.addView(qualityHint);
 
-        addSection(advancedContainer, "诊断");
+        addSection(advancedContainer, L("诊断"));
         logsToggle = addToggle(advancedContainer,
-                "详细调试日志",
-                "开启投影、雾、draw、纹理和 FPS 日志；会增加 CPU 与 logcat 负载。",
+                L("详细调试日志"),
+                L("开启投影、雾、draw、纹理和 FPS 日志；会增加 CPU 与 logcat 负载。"),
                 debugLogs);
         logsToggle.setOnCheckedChangeListener((button, checked) -> {
             debugLogs = checked;
             saveCurrentSettings();
         });
         dumpsToggle = addToggle(advancedContainer,
-                "帧转储",
-                "每 600 帧写入一张 PPM，文件较大且会明显影响帧率。默认关闭。",
+                L("帧转储"),
+                L("每 600 帧写入一张 PPM，文件较大且会明显影响帧率。默认关闭。"),
                 dumpFrames);
         dumpsToggle.setOnCheckedChangeListener((button, checked) -> {
             dumpFrames = checked;
             saveCurrentSettings();
         });
 
-        addSection(advancedContainer, "兼容");
+        addSection(advancedContainer, L("兼容"));
         compatToggle = addToggle(advancedContainer,
-                "PC 渲染兼容修复",
-                "投影 z、深度 LEQUAL、no-fog、ScreenScale=2 和字体缩放。建议保持开启。",
+                L("PC 渲染兼容修复"),
+                L("投影 z、深度 LEQUAL、no-fog、ScreenScale=2 和字体缩放。建议保持开启。"),
                 pcCompat);
         compatToggle.setOnCheckedChangeListener((button, checked) -> {
             pcCompat = checked;
@@ -768,7 +937,7 @@ public class LauncherActivity extends Activity {
         });
 
         TextView pathHint = text(
-                "诊断文件目录：" + new File(RuntimeStorage.dataBase(this), "diagnostics").getAbsolutePath(),
+                L("诊断文件目录：") + new File(RuntimeStorage.dataBase(this), "diagnostics").getAbsolutePath(),
                 13, COLOR_MUTED, false);
         pathHint.setPadding(0, dp(14), 0, dp(16));
         advancedContainer.addView(pathHint);
@@ -778,33 +947,33 @@ public class LauncherActivity extends Activity {
         content.addView(saveBlock, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        addSection(saveBlock, "03  /  存档与文件");
-        TextView storage=text("资料位置："+RuntimeStorage.dataBase(this).getAbsolutePath()+"\n布局 v1；配置与存档分区保存。somjs与旧包独立，旧进度可导出三槽ZIP后导入。",13,COLOR_MUTED,false);
+        addSection(saveBlock, L("03  /  存档与文件"));
+        TextView storage=text(L("资料位置：")+RuntimeStorage.dataBase(this).getAbsolutePath()+L("\n布局 v1；配置与存档分区保存。somjs与旧包独立，旧进度可导出三槽ZIP后导入。"),13,COLOR_MUTED,false);
         saveBlock.addView(storage);
-        Button storageChoice=button("资料位置 · 文档目录 / 旧版位置",false);
-        storageChoice.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("选择资料位置")
-            .setMessage("新安装默认使用应用专属Documents，可从系统文件选择器的本应用入口访问。卸载前请导出存档。切换只选择该位置，不会搬移或合并进度。")
-            .setPositiveButton("文档目录",(d,w)->selectStorage(RuntimeStorage.DOCUMENTS))
-            .setNeutralButton("旧版位置",(d,w)->selectStorage(RuntimeStorage.LEGACY)).setNegativeButton("取消",null).show());
+        Button storageChoice=button(L("资料位置 · 文档目录 / 旧版位置"),false);
+        storageChoice.setOnClickListener(v->new AlertDialog.Builder(this).setTitle(L("选择资料位置"))
+            .setMessage(L("新安装默认使用应用专属Documents，可从系统文件选择器的本应用入口访问。卸载前请导出存档。切换只选择该位置，不会搬移或合并进度。"))
+            .setPositiveButton(L("文档目录"),(d,w)->selectStorage(RuntimeStorage.DOCUMENTS))
+            .setNeutralButton(L("旧版位置"),(d,w)->selectStorage(RuntimeStorage.LEGACY)).setNegativeButton(L("取消"),null).show());
         saveBlock.addView(storageChoice,new LinearLayout.LayoutParams(-1,dp(48)));
         addInfoCard(
                 saveBlock,
-                "三个槽位，一个 ZIP",
-                "导出包含全部现有档案和公共设置；导入可整组恢复。也兼容 Documents/var 和直接包含 .sb 的存档包。"
-                        + "导入前会先把当前 Documents 备份到 save-backups；"
-                        + "请先关闭正在运行的游戏。",
+                L("三个槽位，一个 ZIP"),
+                L("导出包含全部现有档案和公共设置；导入可整组恢复。也兼容 Documents/var 和直接包含 .sb 的存档包。")
+                        + L("导入前会先把当前 Documents 备份到 save-backups；")
+                        + L("请先关闭正在运行的游戏。"),
                 COLOR_ACCENT);
-        Button exportSave = button("导出三槽位 ZIP", false);
+        Button exportSave = button(L("导出三槽位 ZIP"), false);
         exportSave.setOnClickListener(v -> chooseExportZip());
         saveBlock.addView(exportSave, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
-        Button importSave = button("选择 ZIP 存档并导入", false);
+        Button importSave = button(L("选择 ZIP 存档并导入"), false);
         importSave.setOnClickListener(v -> chooseSaveZip());
         LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
         importParams.bottomMargin = dp(8);
         saveBlock.addView(importSave, importParams);
         saveImportStatus = text(
-                "尚未导入。支持 SBIN、版本文件和已知存档依赖，ZIP 解压上限 256 MB。",
+                L("尚未导入。支持 SBIN、版本文件和已知存档依赖，ZIP 解压上限 256 MB。"),
                 12, COLOR_MUTED, false);
         saveImportStatus.setPadding(dp(14), dp(12), dp(14), dp(12));
         saveImportStatus.setBackground(panelBackground(COLOR_PANEL, COLOR_LINE));
@@ -813,31 +982,31 @@ public class LauncherActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         saveStatusParams.bottomMargin = dp(8);
         saveBlock.addView(saveImportStatus, saveStatusParams);
-        Button editor = button("存档编辑器 · 护甲与资源", false);
+        Button editor = button(L("存档编辑与内购编辑 · 上下合并"), false);
         editor.setOnClickListener(v -> SaveEditorDialog.show(this));
         saveBlock.addView(editor, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
-        Button restoreBackup = button("恢复自动备份", false);
+        Button restoreBackup = button(L("恢复自动备份"), false);
         restoreBackup.setOnClickListener(v -> chooseSaveBackup());
         saveBlock.addView(restoreBackup, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
-        Button saveAdvanced=button("高级 · 自动采集存档节点  ▾",false);
+        Button saveAdvanced=button(L("高级 · 自动采集存档节点  ▾"),false);
         saveBlock.addView(saveAdvanced,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(50)));
         LinearLayout nodeOptions=new LinearLayout(this);nodeOptions.setOrientation(LinearLayout.VERTICAL);
         saveBlock.addView(nodeOptions);addSaveNodeControls(nodeOptions);nodeOptions.setVisibility(View.GONE);
         saveAdvanced.setOnClickListener(v->{boolean open=nodeOptions.getVisibility()!=View.VISIBLE;
-            nodeOptions.setVisibility(open?View.VISIBLE:View.GONE);saveAdvanced.setText(open?"高级 · 自动采集存档节点  ▴":"高级 · 自动采集存档节点  ▾");});
+            nodeOptions.setVisibility(open?View.VISIBLE:View.GONE);saveAdvanced.setText(open?L("高级 · 自动采集存档节点  ▴"):L("高级 · 自动采集存档节点  ▾"));});
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
 
-        Button reset = button("恢复默认", false);
+        Button reset = button(L("恢复默认"), false);
         reset.setOnClickListener(v -> resetDefaults());
         actions.addView(reset, new LinearLayout.LayoutParams(0, dp(54), 1.0f));
 
         View gap = new View(this);
         actions.addView(gap, new LinearLayout.LayoutParams(dp(12), dp(1)));
 
-        Button start = button("启动游戏", true);
+        Button start = button(L("启动游戏"), true);
         start.setOnClickListener(v -> startGame());
         actions.addView(start, new LinearLayout.LayoutParams(0, dp(54), 1.7f));
         updateChoiceLabels();
@@ -854,6 +1023,19 @@ public class LauncherActivity extends Activity {
         LinearLayout main = new LinearLayout(this);
         main.setOrientation(LinearLayout.VERTICAL);
         main.setBackgroundColor(COLOR_BG);
+        LinearLayout languageRow = new LinearLayout(this);
+        languageRow.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        languageRow.setPadding(dp(28), dp(4), dp(28), 0);
+        Button language = button(LauncherLanguage.english() ? "中文" : "English", false);
+        language.setContentDescription("中文 / English");
+        language.setOnClickListener(view -> {
+            saveCurrentSettings();
+            LauncherLanguage.toggle(this);
+            setContentView(buildUi());
+        });
+        languageRow.addView(language, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)));
+        main.addView(languageRow);
         main.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f));
         actions.setPadding(dp(28), dp(8), dp(28), dp(20));
@@ -876,23 +1058,23 @@ public class LauncherActivity extends Activity {
         brand.setLetterSpacing(0.24f);
         brand.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         rail.addView(brand);
-        TextView brandSub = text("IOS PORT  /  1.3.34", 10, COLOR_ACCENT, true);
+        TextView brandSub = text("IOS HD PORT  /  1.3.34", 10, COLOR_ACCENT, true);
         brandSub.setLetterSpacing(0.18f);
         brandSub.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         brandSub.setPadding(0, dp(2), 0, dp(5));
         rail.addView(brandSub);
-        TextView brandName = text("死亡空间IOS移植版", 13, COLOR_MUTED, false);
+        TextView brandName = text(L("死亡空间移动版"), 13, COLOR_MUTED, false);
         brandName.setPadding(0, 0, 0, dp(22));
         rail.addView(brandName);
 
-        rail.addView(railButton("01   概览", () -> scrollToSection(scroll, overview)));
-        rail.addView(railButton("02   画质", () -> scrollToSection(scroll, quality)));
-        rail.addView(railButton("03   实验参数", () -> {
+        rail.addView(railButton(L("00   关于"), () -> scrollToSection(scroll, overview)));
+        rail.addView(railButton(L("01   画质"), () -> scrollToSection(scroll, quality)));
+        rail.addView(railButton(L("02   实验参数"), () -> {
             advancedExpanded = true;
             updateAdvancedVisibility();
             scrollToSection(scroll, advanced);
         }));
-        rail.addView(railButton("04   存档与文件", () -> scrollToSection(scroll, saves)));
+        rail.addView(railButton(L("03   存档与文件"), () -> scrollToSection(scroll, saves)));
 
         View spacer = new View(this);
         rail.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1.0f));
@@ -951,54 +1133,54 @@ public class LauncherActivity extends Activity {
     private void updateChoiceLabels() {
         String scaleText;
         if (scaleHack <= 1) {
-            scaleText = "内部渲染：1× 性能";
+            scaleText = L("内部渲染：1× 性能");
         } else if (scaleHack == 2) {
-            scaleText = "内部渲染：2× 平衡";
+            scaleText = L("内部渲染：2× 平衡");
         } else {
-            scaleText = "内部渲染：3× 清晰";
+            scaleText = L("内部渲染：3× 清晰");
         }
         scaleButton.setText(scaleText + "   ›");
 
         String capText;
         if (fpsCap == 30) {
-            capText = "帧率上限：30 FPS";
+            capText = L("帧率上限：30 FPS");
         } else if (fpsCap == 70) {
-            capText = "帧率上限：70 FPS";
+            capText = L("帧率上限：70 FPS");
         } else if (fpsCap == 60) {
-            capText = "帧率上限：60 FPS";
+            capText = L("帧率上限：60 FPS");
         } else {
-            capText = "帧率上限：不限制（推荐）";
+            capText = L("帧率上限：不限制（推荐）");
         }
         capButton.setText(capText + "   ›");
         stretchButton.setText((stretchViewport
-                ? "画面比例：拉伸铺满（会变形）"
-                : "画面比例：保持 3:2") + "   ›");
+                ? L("画面比例：拉伸铺满（会变形）")
+                : L("画面比例：保持 3:2")) + "   ›");
 
         String fsrText;
         if (fsrMode == 1) {
             fsrText = "FSR：EASU + RCAS";
         } else if (fsrMode == 2) {
-            fsrText = "FSR：EASU 快速";
+            fsrText = L("FSR：EASU 快速");
         } else {
-            fsrText = "FSR：关闭";
+            fsrText = L("FSR：关闭");
         }
         fsrButton.setText(fsrText + "   ›");
 
-        aaButton.setText((aaEnabled ? "抗锯齿：FXAA" : "抗锯齿：关闭") + "   ›");
+        aaButton.setText((aaEnabled ? L("抗锯齿：FXAA") : L("抗锯齿：关闭")) + "   ›");
 
         String sharpenText;
         if (sharpenTenths >= 10) {
-            sharpenText = "CAS 锐化：1.0";
+            sharpenText = L("CAS 锐化：1.0");
         } else if (sharpenTenths >= 5) {
-            sharpenText = "CAS 锐化：0.5";
+            sharpenText = L("CAS 锐化：0.5");
         } else {
-            sharpenText = "CAS 锐化：关闭";
+            sharpenText = L("CAS 锐化：关闭");
         }
         sharpenButton.setText(sharpenText + "   ›");
-        String shadowText = shadowBoostPercent == 0 ? "关闭 0%（原始）"
+        String shadowText = shadowBoostPercent == 0 ? L("关闭 0%（原始）")
                 : (shadowBoostPercent <= 30 ? "30%"
                 : (shadowBoostPercent <= 60 ? "60%" : "100%"));
-        shadowBoostButton.setText("暗部增强（已弃用）：" + shadowText + "   ›");
+        shadowBoostButton.setText(L("暗部增强（已弃用）：") + shadowText + "   ›");
     }
 
     private void addPresetRow(LinearLayout root, int start, int count) {
@@ -1007,7 +1189,7 @@ public class LauncherActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         for (int index = start; index < start + count; index++) {
             final String preset = PRESET_KEYS[index];
-            Button presetButton = button(PRESET_LABELS[index], false);
+            Button presetButton = button(L(PRESET_LABELS[index]), false);
             presetButton.setOnClickListener(v -> applyPreset(preset, true));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     0, dp(54), 1.0f);
@@ -1128,6 +1310,27 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    private void updateSafeBlackGrayUi() {
+        if (safeBlackGraySeek != null) safeBlackGraySeek.setEnabled(safeBlackFloor);
+        if (safeBlackGrayValue != null) {
+            safeBlackGrayValue.setEnabled(safeBlackFloor);
+            safeBlackGrayValue.setText(safeBlackGray + " / 255");
+        }
+    }
+
+    private void updateTiltPulseUi() {
+        if (tiltThresholdValue != null) {
+            tiltThresholdValue.setText(String.format(java.util.Locale.US, "%.3f G", tiltPulseThresholdMilliG / 1000.0));
+        }
+        if (tiltCooldownValue != null) tiltCooldownValue.setText(tiltPulseCooldownMs + " ms");
+        if (tiltThresholdSeek != null && tiltThresholdSeek.getProgress() != tiltPulseThresholdMilliG - 80) {
+            tiltThresholdSeek.setProgress(tiltPulseThresholdMilliG - 80);
+        }
+        if (tiltCooldownSeek != null && tiltCooldownSeek.getProgress() != tiltPulseCooldownMs - 100) {
+            tiltCooldownSeek.setProgress(tiltPulseCooldownMs - 100);
+        }
+    }
+
     private void onQualitySettingChanged() {
         if (applyingPreset) return;
         qualityPreset = PRESET_CUSTOM;
@@ -1137,7 +1340,7 @@ public class LauncherActivity extends Activity {
 
     private void saveCurrentSettings() {
         try {RuntimeStorage.checkConfiguration(this);}
-        catch(IOException error){Toast.makeText(this,"设置未保存："+error.getMessage(),Toast.LENGTH_LONG).show();return;}
+        catch(IOException error){Toast.makeText(this,L("设置未保存：")+error.getMessage(),Toast.LENGTH_LONG).show();return;}
         prefs.edit()
                 .putBoolean(KEY_FPS, showFps)
                 .putBoolean(KEY_LOGS, debugLogs)
@@ -1146,6 +1349,12 @@ public class LauncherActivity extends Activity {
                 .putBoolean(KEY_FAST_PRESENT, fastPresent)
                 .putBoolean(KEY_SKIP_READBACK, skipReadback)
                 .putBoolean(KEY_GPU_COPY, gpuPresentCopy)
+                .putBoolean(KEY_SAFE_BLACK_FLOOR, safeBlackFloor)
+                .putInt(KEY_SAFE_BLACK_GRAY, safeBlackGray)
+                .putBoolean(KEY_TILT_PULSE, tiltPulseEnabled)
+                .putInt(KEY_TILT_THRESHOLD, tiltPulseThresholdMilliG)
+                .putInt(KEY_TILT_COOLDOWN, tiltPulseCooldownMs)
+                .putBoolean(KEY_TEXTURES, bundledTextures)
                 .putInt(KEY_SCALE, scaleHack)
                 .putInt(KEY_CAP, fpsCap)
                 .putBoolean(KEY_STRETCH, stretchViewport)
@@ -1163,7 +1372,7 @@ public class LauncherActivity extends Activity {
                 .putString(KEY_PRESET, qualityPreset)
                 .apply();
         try {RuntimeStorage.saveConfiguration(this);}
-        catch(IOException error){Toast.makeText(this,"配置文件未保存："+error.getMessage(),Toast.LENGTH_LONG).show();}
+        catch(IOException error){Toast.makeText(this,L("配置文件未保存：")+error.getMessage(),Toast.LENGTH_LONG).show();}
     }
 
     private String detectCurrentPreset() {
@@ -1258,56 +1467,56 @@ public class LauncherActivity extends Activity {
                 presetButton.setEnabled(fsr3Usable());
                 presetButton.setAlpha(fsr3Usable() ? 1.0f : 0.45f);
                 if (!fsr3Usable()) {
-                    presetButton.setText("FSR3 实验（不可用）");
+                    presetButton.setText(L("FSR3 实验（不可用）"));
                 } else {
-                    presetButton.setText(PRESET_LABELS[index]);
+                    presetButton.setText(L(PRESET_LABELS[index]));
                 }
             }
         }
 
         String scale = scaleHack + "×";
-        String fxaa = aaEnabled ? "FXAA 开" : "FXAA 关";
-        String cas = sharpenTenths == 0 ? "CAS 关"
+        String fxaa = aaEnabled ? L("FXAA 开") : L("FXAA 关");
+        String cas = sharpenTenths == 0 ? L("CAS 关")
                 : String.format(java.util.Locale.US, "CAS %.1f", sharpenTenths / 10.0);
         if (PRESET_RECOMMENDED.equals(qualityPreset)) {
             presetSummary.setTextColor(COLOR_TEXT);
             presetSummary.setText(
-                    "推荐配置总览\n"
-                            + "原生 3× · FSR 关闭 · FXAA 开 · CAS 0.5 · 保持 3:2\n"
-                            + "3× 基线约 60 FPS；FXAA/CAS 组合尚需分设备复测。");
+                    L("推荐配置总览\n")
+                            + L("原生 3× · FSR 关闭 · FXAA 开 · CAS 0.5 · 保持 3:2\n")
+                            + L("3× 基线约 60 FPS；FXAA/CAS 组合尚需分设备复测。"));
             presetSummary.setBackground(
                     panelBackground(COLOR_PANEL_ALT, COLOR_LINE));
         } else if (PRESET_PERFORMANCE.equals(qualityPreset)) {
             presetSummary.setTextColor(COLOR_TEXT);
             presetSummary.setText(
-                    "性能优先\n"
-                            + "原生 1× · FSR/FXAA/CAS 关闭 · 快速呈现开启\n"
-                            + "画质更软，优先保证帧时间和发热。");
+                    L("性能优先\n")
+                            + L("原生 1× · FSR/FXAA/CAS 关闭 · 快速呈现开启\n")
+                            + L("画质更软，优先保证帧时间和发热。"));
             presetSummary.setBackground(
                     panelBackground(COLOR_PANEL_ALT, COLOR_LINE));
         } else if (PRESET_COMPATIBILITY.equals(qualityPreset)) {
             presetSummary.setTextColor(COLOR_TEXT);
             presetSummary.setText(
-                    "兼容优先\n"
-                            + "原生 1× · 关闭快速呈现/跳读回/GPU 复制 · PC 修复开启\n"
-                            + "用于未知 GPU 或出现闪烁、黑帧的设备。");
+                    L("兼容优先\n")
+                            + L("原生 1× · 关闭快速呈现/跳读回/GPU 复制 · PC 修复开启\n")
+                            + L("用于未知 GPU 或出现闪烁、黑帧的设备。"));
             presetSummary.setBackground(
                     panelBackground(COLOR_PANEL_ALT, COLOR_LINE));
         } else if (PRESET_FSR3.equals(qualityPreset)) {
             presetSummary.setTextColor(COLOR_WARN);
             presetSummary.setText(
-                    "FSR3 实验\n"
-                            + "内部 2× · FSR3.1 + 真实 D16 + 异步一帧 · 直写关闭\n"
-                            + "多约一帧延迟；缺 motion/jitter/history，不是完整时间超分或帧生成。");
+                    L("FSR3 实验\n")
+                            + L("内部 2× · FSR3.1 + 真实 D16 + 异步一帧 · 直写关闭\n")
+                            + L("多约一帧延迟；缺 motion/jitter/history，不是完整时间超分或帧生成。"));
             presetSummary.setBackground(
                     panelBackground(COLOR_PANEL, COLOR_WARN));
         } else {
             presetSummary.setTextColor(COLOR_TEXT);
             presetSummary.setText(
-                    "自定义配置\n"
-                            + "内部 " + scale + " · " + fxaa + " · " + cas
-                            + " · " + (fsr3AhbEnabled ? "FSR3 开" : "FSR3 关")
-                            + "\n展开高级参数可继续逐项调整。");
+                    L("自定义配置\n")
+                            + L("内部 ") + scale + " · " + fxaa + " · " + cas
+                            + " · " + (fsr3AhbEnabled ? L("FSR3 开") : L("FSR3 关"))
+                            + L("\n展开高级参数可继续逐项调整。"));
             presetSummary.setBackground(
                     panelBackground(COLOR_PANEL_ALT, COLOR_LINE));
         }
@@ -1317,28 +1526,35 @@ public class LauncherActivity extends Activity {
         if (advancedContainer == null || advancedButton == null) return;
         advancedContainer.setVisibility(advancedExpanded ? View.VISIBLE : View.GONE);
         advancedButton.setText(advancedExpanded
-                ? "高级参数：收起   ›"
-                : "高级参数：展开（自定义）   ›");
+                ? L("高级参数：收起   ›")
+                : L("高级参数：展开（自定义）   ›"));
     }
 
     private void resetDefaults() {
         shadowBoostPercent = 0;
-        showFps = true;
+        tiltPulseEnabled = false;
+        tiltPulseThresholdMilliG = TiltGestureSettings.DEFAULT_MILLI_G;
+        tiltPulseCooldownMs = 380;
+        showFps = false;
         debugLogs = false;
         dumpFrames = false;
         setChecked(fpsToggle, showFps);
         setChecked(logsToggle, debugLogs);
         setChecked(dumpsToggle, dumpFrames);
+        bundledTextures = BuildConfig.BUNDLED_TEXTURES;
+        setChecked(textureToggle, bundledTextures);
+        setChecked(tiltPulseToggle, tiltPulseEnabled);
+        updateTiltPulseUi();
         applyPreset(PRESET_RECOMMENDED, true);
     }
 
     private void selectStorage(String mode) {
         try {RuntimeStorage.select(this,mode);recreate();}
-        catch(IOException error){new AlertDialog.Builder(this).setTitle("未切换资料位置").setMessage(error.getMessage()).setPositiveButton("确定",null).show();}
+        catch(IOException error){new AlertDialog.Builder(this).setTitle(L("未切换资料位置")).setMessage(error.getMessage()).setPositiveButton(L("确定"),null).show();}
     }
 
     private void startGame() {
-        StartupReview.askBeforeStart(this,benchmarkNextStart,selected->{benchmarkNextStart=selected;startGameConfirmed();});
+        startGameConfirmed();
     }
     private void startGameConfirmed() {
         startGameWithConfig(
@@ -1355,6 +1571,8 @@ public class LauncherActivity extends Activity {
                 fsrMode,
                 aaEnabled,
                 sharpenTenths,
+                safeBlackFloor,
+                safeBlackGray,
                 false,
                 fsr3AhbEnabled,
                 fsr3FgEnabled && fsr3AhbEnabled,
@@ -1383,6 +1601,8 @@ public class LauncherActivity extends Activity {
             int fsr,
             boolean aa,
             int sharpen,
+            boolean safeBlackFloor,
+            int safeBlackGray,
             boolean statsLog,
             boolean fsr3AhbProbe,
             boolean fsr3FrameGeneration,
@@ -1397,9 +1617,9 @@ public class LauncherActivity extends Activity {
             String ipaPath) {
         File dataBase;
         try {RuntimeStorage.requireGameStopped(this);RuntimeStorage.checkConfiguration(this);dataBase=RuntimeStorage.requireCompatible(this);}
-        catch(IOException error){new AlertDialog.Builder(this).setTitle("无法启动游戏").setMessage(error.getMessage()).setPositiveButton("确定",null).show();return;}
+        catch(IOException error){new AlertDialog.Builder(this).setTitle(L("无法启动游戏")).setMessage(error.getMessage()).setPositiveButton(L("确定"),null).show();return;}
         if (new File(dataBase, ".save-lab-adb-lock").exists() || SaveArchiveImporter.isBusy()) {
-            Toast.makeText(this, "正在切换存档，请完成后再启动游戏。", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, L("正在切换存档，请完成后再启动游戏。"), Toast.LENGTH_LONG).show();
             return;
         }
         prefs.edit()
@@ -1410,6 +1630,11 @@ public class LauncherActivity extends Activity {
                 .putBoolean(KEY_FAST_PRESENT, fastPresent)
                 .putBoolean(KEY_SKIP_READBACK, skipReadback)
                 .putBoolean(KEY_GPU_COPY, gpuPresentCopy)
+                .putBoolean(KEY_SAFE_BLACK_FLOOR, safeBlackFloor)
+                .putInt(KEY_SAFE_BLACK_GRAY, safeBlackGray)
+                .putBoolean(KEY_TILT_PULSE, tiltPulseEnabled)
+                .putInt(KEY_TILT_THRESHOLD, tiltPulseThresholdMilliG)
+                .putInt(KEY_TILT_COOLDOWN, tiltPulseCooldownMs)
                 .putInt(KEY_SCALE, scale)
                 .putInt(KEY_CAP, cap)
                 .putBoolean(KEY_STRETCH, stretch)
@@ -1428,16 +1653,14 @@ public class LauncherActivity extends Activity {
                 .apply();
 
         try {RuntimeStorage.saveConfiguration(this);}
-        catch(IOException error){new AlertDialog.Builder(this).setTitle("配置未保存").setMessage(error.getMessage()).setPositiveButton("确定",null).show();return;}
+        catch(IOException error){new AlertDialog.Builder(this).setTitle(L("配置未保存")).setMessage(error.getMessage()).setPositiveButton(L("确定"),null).show();return;}
         Intent intent = new Intent(this, MainActivity.class);
-        intent.putExtra("benchmark",benchmarkNextStart || getIntent().getBooleanExtra("benchmark",false));
-        intent.putExtra("startup_check",!getIntent().getBooleanExtra("autorun",false) || getIntent().getBooleanExtra("startup_check",false));
         intent.putExtra("overlay_enabled", getIntent().getBooleanExtra("overlay_enabled",prefs.getBoolean("overlay_enabled", true)));
         intent.putExtra(SaveNodeMonitor.KEY_ENABLED, prefs.getBoolean(SaveNodeMonitor.KEY_ENABLED, false));
         intent.putExtra(SaveNodeMonitor.KEY_IMAGES, prefs.getBoolean(SaveNodeMonitor.KEY_IMAGES, true));
-        String nodeSession = saveNodeSession == null ? prefs.getString(SaveNodeMonitor.KEY_SESSION, "一周目采集")
+        String nodeSession = saveNodeSession == null ? prefs.getString(SaveNodeMonitor.KEY_SESSION, L("一周目采集"))
                 : saveNodeSession.getText().toString().trim();
-        if (nodeSession == null || nodeSession.isEmpty()) nodeSession = "一周目采集";
+        if (nodeSession == null || nodeSession.isEmpty()) nodeSession = L("一周目采集");
         prefs.edit().putString(SaveNodeMonitor.KEY_SESSION, nodeSession).apply();
         intent.putExtra(SaveNodeMonitor.KEY_SESSION, nodeSession);
         intent.putExtra("show_fps", showFps);
@@ -1448,12 +1671,18 @@ public class LauncherActivity extends Activity {
         intent.putExtra("fast_present", fastPresent);
         intent.putExtra("skip_readback", skipReadback);
         intent.putExtra("gpu_present_copy", gpuPresentCopy);
+        intent.putExtra("bundled_textures", bundledTextures);
         intent.putExtra("scale_hack", scale);
         intent.putExtra("fps_cap", cap);
         intent.putExtra("viewport_stretch", stretch);
         intent.putExtra("present_fsr", fsr);
         intent.putExtra("aa", aa);
         intent.putExtra("present_sharpen", sharpen);
+        intent.putExtra("safe_black_floor", safeBlackFloor);
+        intent.putExtra("safe_black_gray", safeBlackGray);
+        intent.putExtra("tilt_pulse", tiltPulseEnabled);
+        intent.putExtra("tilt_threshold_mg", tiltPulseThresholdMilliG);
+        intent.putExtra("tilt_cooldown_ms", tiltPulseCooldownMs);
         intent.putExtra("shadow_boost", shadowBoostPercent);
         intent.putExtra("fsr3_ahb_probe", fsr3AhbProbe);
         intent.putExtra("fsr3_force", fsr3ForceEnabled);
@@ -1478,31 +1707,31 @@ public class LauncherActivity extends Activity {
     }
 
     private void addSaveNodeControls(LinearLayout parent) {
-        CheckBox enabled = addToggle(parent, "自动采集存档节点（可选）",
-                "默认关闭，下次启动游戏生效。开启后归档游戏写出的存档，便于整理一周目节点。",
+        CheckBox enabled = addToggle(parent, L("自动采集存档节点（可选）"),
+                L("默认关闭，下次启动游戏生效。开启后归档游戏写出的存档，便于整理一周目节点。"),
                 prefs.getBoolean(SaveNodeMonitor.KEY_ENABLED, false));
         enabled.setOnCheckedChangeListener((button, checked) -> {
             prefs.edit().putBoolean(SaveNodeMonitor.KEY_ENABLED, checked).apply(); refreshSaveNodeStatus();
         });
         saveNodeSession = new EditText(this); saveNodeSession.setSingleLine(true);
         saveNodeSession.setTextColor(COLOR_TEXT); saveNodeSession.setHintTextColor(COLOR_MUTED);
-        saveNodeSession.setHint("本轮名称，例如：一周目 · 玩家A");
+        saveNodeSession.setHint(L("本轮名称，例如：一周目 · 玩家A"));
         saveNodeSession.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
-        saveNodeSession.setText(prefs.getString(SaveNodeMonitor.KEY_SESSION, "一周目采集"));
+        saveNodeSession.setText(prefs.getString(SaveNodeMonitor.KEY_SESSION, L("一周目采集")));
         parent.addView(saveNodeSession, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-        CheckBox images = addToggle(parent, "附带节点画面", "仅在节点采集开启时拍摄游戏画面。", prefs.getBoolean(SaveNodeMonitor.KEY_IMAGES, true));
+        CheckBox images = addToggle(parent, L("附带节点画面"), L("仅在节点采集开启时拍摄游戏画面。"), prefs.getBoolean(SaveNodeMonitor.KEY_IMAGES, true));
         images.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean(SaveNodeMonitor.KEY_IMAGES, checked).apply());
         saveNodeStatus = text("", 12, COLOR_MUTED, false); saveNodeStatus.setPadding(dp(14), dp(8), dp(14), dp(8));
         parent.addView(saveNodeStatus); refreshSaveNodeStatus();
-        Button export = button("导出采集节点库 ZIP", false);
+        Button export = button(L("导出采集节点库 ZIP"), false);
         export.setOnClickListener(v -> {
             export.setEnabled(false);
             new Thread(() -> {
                 try {
                     File file = SaveNodeMonitor.export(this);
-                    runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("节点库已导出")
-                            .setMessage("文件：" + file.getName() + "\n可在应用文件目录的 save-node-exports 中取出。")
-                            .setPositiveButton("确定", null).show());
+                    runOnUiThread(() -> new AlertDialog.Builder(this).setTitle(L("节点库已导出"))
+                            .setMessage(L("文件：") + file.getName() + L("\n可在应用文件目录的 save-node-exports 中取出。"))
+                            .setPositiveButton(L("确定"), null).show());
                 } catch (Exception error) { runOnUiThread(() -> Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show()); }
                 finally { runOnUiThread(() -> { export.setEnabled(true); refreshSaveNodeStatus(); }); }
             }, "save-node-export").start();
@@ -1512,21 +1741,21 @@ public class LauncherActivity extends Activity {
 
     private void refreshSaveNodeStatus() {
         if (saveNodeStatus == null) return;
-        String state = prefs.getBoolean(SaveNodeMonitor.KEY_ENABLED, false) ? "采集已开启（下次启动生效）" : "采集关闭";
+        String state = prefs.getBoolean(SaveNodeMonitor.KEY_ENABLED, false) ? L("采集已开启（下次启动生效）") : L("采集关闭");
         try {
             if (new File(SaveNodeMonitor.bank(this), "initialization-error.txt").isFile()) {
-                saveNodeStatus.setText(state + " · 上次采集初始化失败，详见导出记录。"); return;
+                saveNodeStatus.setText(state + L(" · 上次采集初始化失败，详见导出记录。")); return;
             }
             File file = new File(SaveNodeMonitor.bank(this), "status.json");
-            if (!file.isFile() || file.length() > 65536) { saveNodeStatus.setText(state + " · 尚无节点"); return; }
+            if (!file.isFile() || file.length() > 65536) { saveNodeStatus.setText(state + L(" · 尚无节点")); return; }
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (FileInputStream input = new FileInputStream(file)) { byte[] buffer = new byte[4096]; int count; while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count); }
             org.json.JSONObject status = new org.json.JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
-            String message = state + " · 已归档 " + status.optLong("nodes") + " 个节点 / " + status.optLong("versions") + " 个文件版本";
-            message += String.format(java.util.Locale.US, "\n约 %.1f MB · 最近 %s", status.optLong("estimated_bytes") / 1048576.0, status.optString("last_level", ""));
-            if (!status.optString("last_error", "").isEmpty()) message += "\n最近采集暂缓，详见导出记录。";
+            String message = state + L(" · 已归档 ") + status.optLong("nodes") + L(" 个节点 / ") + status.optLong("versions") + L(" 个文件版本");
+            message += String.format(java.util.Locale.US, L("\n约 %.1f MB · 最近 %s"), status.optLong("estimated_bytes") / 1048576.0, status.optString("last_level", ""));
+            if (!status.optString("last_error", "").isEmpty()) message += L("\n最近采集暂缓，详见导出记录。");
             saveNodeStatus.setText(message);
-        } catch (Exception error) { saveNodeStatus.setText(state + " · 状态更新中"); }
+        } catch (Exception error) { saveNodeStatus.setText(state + L(" · 状态更新中")); }
     }
 
     @Override
@@ -1542,7 +1771,7 @@ public class LauncherActivity extends Activity {
         if (!fsr3Supported && !fsr3ForceEnabled) {
             fsr3SelectionStatus.setTextColor(COLOR_WARN);
             fsr3SelectionStatus.setText(
-                    "当前选择：不可用。设备未满足基础 Vulkan/ABI/API 条件，将使用原生路径。");
+                    L("当前选择：不可用。设备未满足基础 Vulkan/ABI/API 条件，将使用原生路径。"));
             if (fsr3DepthToggle != null) fsr3DepthToggle.setEnabled(false);
             return;
         }
@@ -1556,21 +1785,21 @@ public class LauncherActivity extends Activity {
         if (!fsr3AhbToggle.isChecked()) {
             fsr3SelectionStatus.setTextColor(COLOR_MUTED);
             fsr3SelectionStatus.setText(
-                    "当前选择：原生路径。FSR3 超分、真实深度和帧生成均不会运行。");
+                    L("当前选择：原生路径。FSR3 超分、真实深度和帧生成均不会运行。"));
         } else if (!depthEnabled) {
             fsr3SelectionStatus.setTextColor(COLOR_WARN);
             fsr3SelectionStatus.setText(
-                    "当前选择：FSR3.1 呈现/超分探针，depth=false。"
-                            + "请同时开启“真实深度输入 D16”才能形成当前可验证的最小输入组合。");
+                    L("当前选择：FSR3.1 呈现/超分探针，depth=false。")
+                            + L("请同时开启“真实深度输入 D16”才能形成当前可验证的最小输入组合。"));
         } else {
             fsr3SelectionStatus.setTextColor(COLOR_ACCENT);
             fsr3SelectionStatus.setText(
-                    "当前选择：FSR3.1 + 真实 D16 深度（"
-                            + (fsr3GpuDepthToggle.isChecked() ? "GPU 直通" : "CPU 读回")
-                            + "，" + (fsr3AsyncToggle.isChecked() ? "异步一帧流水线" : "同步等待")
-                            + (fsr3DirectOutputToggle.isChecked() ? " + 直接输出" : "")
+                    L("当前选择：FSR3.1 + 真实 D16 深度（")
+                            + (fsr3GpuDepthToggle.isChecked() ? L("GPU 直通") : L("CPU 读回"))
+                            + "，" + (fsr3AsyncToggle.isChecked() ? L("异步一帧流水线") : L("同步等待"))
+                            + (fsr3DirectOutputToggle.isChecked() ? L(" + 直接输出") : "")
                             + "）。"
-                            + "仍缺 motion/jitter/history/HUD 分层；帧生成保持关闭。");
+                            + L("仍缺 motion/jitter/history/HUD 分层；帧生成保持关闭。"));
         }
     }
 

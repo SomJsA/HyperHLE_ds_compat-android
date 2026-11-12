@@ -69,9 +69,17 @@ if ($BundledIpaPath) {
 }
 
 $gradleTask = if ($BuildType -eq 'release') { 'assembleRelease' } else { 'assembleDebug' }
+$gradleProperties = @(
+    "-PtouchHleAndroidAbi=$Abi"
+    "-PtouchHleTargetSdk=$TargetSdk"
+    "-PtouchHleFastPresent=$FastPresent"
+    "-PtouchHleScaleHack=$ScaleHack"
+    "-PtouchHleApplicationIdSuffix=$ApplicationIdSuffix"
+    "-PtouchHleSdlJavaDir=$(Join-Path $repoRoot 'vendor/SDL/android-project/app/src/main/java')"
+)
 Push-Location $androidRoot
 try {
-    & $gradleBat --no-daemon --console=plain "-PtouchHleAndroidAbi=$Abi" "-PtouchHleTargetSdk=$TargetSdk" "-PtouchHleFastPresent=$FastPresent" "-PtouchHleScaleHack=$ScaleHack" "-PtouchHleApplicationIdSuffix=$ApplicationIdSuffix" $gradleTask
+    & $gradleBat --no-daemon --console=plain @gradleProperties $gradleTask
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle failed with exit code $LASTEXITCODE"
     }
