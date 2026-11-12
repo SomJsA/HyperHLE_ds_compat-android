@@ -23,7 +23,8 @@ jobs:
           def metadata(url):
               with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=45) as response:
                   return json.load(response)
-          release=metadata(root+'/releases/tags/'+os.environ['RELEASE_TAG'])
+          release=metadata(root+'/releases/442708985')
+          assert release['tag_name']==os.environ['RELEASE_TAG']
           assets={}
           def refresh():
               page=1
