@@ -568,29 +568,7 @@ public class LauncherActivity extends Activity {
         });
         TextView languageNote=text(L("高清文字目前为中文。可关闭高清中文组件，使用游戏原生文字与语言设置。欢迎多语言用户投稿；若暂无投稿，我们计划在R8之前支持其他语言的高清文字组件。"),12,COLOR_MUTED,false);
         languageNote.setPadding(0,dp(8),0,dp(16));qualityBlock.addView(languageNote);
-        View presetAnchor=new View(this);qualityBlock.addView(presetAnchor,new LinearLayout.LayoutParams(1,1));
-        addSection(qualityBlock, L("02  /  画质模式"));
-        TextView presetHint = text(
-                L("推荐：原生 3× + FXAA + CAS 0.5，FSR3 关闭。")
-                        + L("先选常用预设；需要逐项调整时再进入自定义。"),
-                13, COLOR_MUTED, false);
-        presetHint.setPadding(0, dp(4), 0, dp(8));
-        qualityBlock.addView(presetHint);
-        addPresetRow(qualityBlock, 0, 2);
-        addPresetRow(qualityBlock, 2, 2);
-        addPresetRow(qualityBlock, 4, 1);
-
-        presetSummary = text("", 14, COLOR_TEXT, false);
-        presetSummary.setLineSpacing(0f, 1.08f);
-        presetSummary.setPadding(dp(16), dp(12), dp(16), dp(12));
-        presetSummary.setBackground(
-                panelBackground(COLOR_PANEL_ALT, COLOR_LINE));
-        LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        summaryParams.topMargin = dp(2);
-        summaryParams.bottomMargin = dp(8);
-        qualityBlock.addView(presetSummary, summaryParams);
+        addSection(qualityBlock,L("02  /  其他画面选项"));
 
         shadowBoostButton = addCycleButton(qualityBlock, "", v -> {
             shadowBoostPercent = shadowBoostPercent == 0 ? 30
@@ -643,11 +621,12 @@ public class LauncherActivity extends Activity {
         });
         updateSafeBlackGrayUi();
 
+        View inputAnchor=new View(this);qualityBlock.addView(inputAnchor,new LinearLayout.LayoutParams(1,1));
         addSection(qualityBlock, L("Android 输入"));
         tiltPulseToggle = addToggle(qualityBlock,
                 L("侧向切换模式冷却（Android）"),
                 L("开启：一次较强侧向偏转只触发一次主/副模式切换，设备回正后才可再次触发；")
-                        + L("关闭：回到原生连续加速度输入语义。与护眼模式、画质预设和横屏确认独立。"),
+                        + L("关闭：回到原生连续加速度输入语义。与护眼模式和横屏确认独立。"),
                 tiltPulseEnabled);
         tiltPulseToggle.setOnCheckedChangeListener((button, checked) -> {
             tiltPulseEnabled = checked;
@@ -1029,7 +1008,7 @@ public class LauncherActivity extends Activity {
         page.setOrientation(LinearLayout.HORIZONTAL);
         page.setBackgroundColor(COLOR_BG);
         content.removeView(qualityBlock);content.addView(qualityBlock,0);
-        View rail = buildNavigationRail(scroll, hero, overlayToggle, displayAnchor, presetAnchor, advancedContainer, saveBlock);
+        View rail = buildNavigationRail(scroll, hero, overlayToggle, displayAnchor, inputAnchor, advancedContainer, saveBlock);
         page.addView(rail, new LinearLayout.LayoutParams(dp(190),
                 LinearLayout.LayoutParams.MATCH_PARENT));
 
@@ -1061,7 +1040,7 @@ public class LauncherActivity extends Activity {
     }
 
     private View buildNavigationRail(
-            ScrollView scroll, View overview, View quality, View display, View presets, View advanced, View saves) {
+            ScrollView scroll, View overview, View quality, View display, View controls, View advanced, View saves) {
         LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
         rail.setPadding(dp(18), dp(24), dp(18), dp(18));
@@ -1083,8 +1062,8 @@ public class LauncherActivity extends Activity {
         rail.addView(railButton(L("00   关于"), () -> scrollToSection(scroll, overview)));
         rail.addView(railButton(L("01   高清文字"), () -> scrollToSection(scroll, quality)));
         rail.addView(railButton(L("02   显示与光影"), () -> scrollToSection(scroll, display)));
-        rail.addView(railButton(L("03   画质预设"), () -> scrollToSection(scroll, presets)));
-        rail.addView(railButton(L("04   操作与参数"), () -> {
+        rail.addView(railButton(L("03   操作手势"), () -> scrollToSection(scroll, controls)));
+        rail.addView(railButton(L("04   详细设置"), () -> {
             advancedExpanded = true;
             updateAdvancedVisibility();
             scrollToSection(scroll, advanced);

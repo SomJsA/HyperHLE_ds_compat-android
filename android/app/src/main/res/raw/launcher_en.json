@@ -344,5 +344,9 @@
   "HD版 · 内置4×纹理": "HD · 4× textures",
   "普通版 · 原版纹理": "Standard · Original textures",
   "02   显示与光影": "02   Display",
-  "04   操作与参数": "04   Controls"
+  "04   操作与参数": "04   Controls",
+  "02  /  其他画面选项": "02  /  OTHER DISPLAY OPTIONS",
+  "03   操作手势": "03   Gestures",
+  "04   详细设置": "04   Details",
+  "关闭：回到原生连续加速度输入语义。与护眼模式和横屏确认独立。": "Off: restore the original continuous accelerometer input. Independent of eye-comfort mode and landscape confirmation."
 }
