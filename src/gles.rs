@@ -329,3 +329,5 @@ pub(crate) mod ds_window_handoff;
 
 #[cfg(target_os = "android")]
 pub(crate) mod ds_render_actor;
+
+pub(crate) mod ds_opening_fog;

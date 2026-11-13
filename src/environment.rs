@@ -1517,6 +1517,7 @@ impl Environment {
     pub fn run(mut self) {
         crate::ds_font_roles::prime(&mut self);
         crate::ds_game_clock::prime(&mut self);
+        crate::ds_shader_opening_fog::prime(&mut self);
         crate::ds_shader_projection::prime(&mut self);
         #[cfg(target_os = "android")]
         crate::ds_skin_math::prime(&mut self);

@@ -41,6 +41,7 @@ mod ds_texture_upload_sync;
 #[cfg(target_os = "android")]
 mod ds_chapter_overlay;
 mod ds_game_clock;
+mod ds_shader_opening_fog;
 mod ds_shader_projection;
 mod ds_font_roles;
 #[cfg(target_os = "android")]
