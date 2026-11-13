@@ -95,8 +95,52 @@ jobs:
               assert total==item['bytes'] and digest.hexdigest()==expected[item['name']]
               print(item['name'],total,digest.hexdigest())
           PY
-      - name: Upload full verified APKs
-        run: gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" assembled/*
+      - name: Upload full verified APKs by immutable release ID
+        run: |
+          python3 - <<'PY'
+          import os,json,urllib.request,subprocess,time,hashlib
+          from pathlib import Path
+          token=os.environ['GH_TOKEN']
+          repo=os.environ['GITHUB_REPOSITORY']
+          release_id=443821692
+          headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+          root='https://api.github.com/repos/'+repo
+          def request(path,method='GET'):
+              with urllib.request.urlopen(urllib.request.Request(root+path,headers=headers,method=method),timeout=45) as r:
+                  return json.load(r) if method=='GET' else None
+          def assets():
+              rows=[];page=1
+              while True:
+                  batch=request('/releases/'+str(release_id)+'/assets?per_page=100&page='+str(page))
+                  rows.extend(batch)
+                  if len(batch)<100:return {a['name']:a for a in rows}
+                  page+=1
+          manifest=json.loads(Path('incoming/codex-r4-transfer-manifest.json').read_text())
+          assert request('/releases/'+str(release_id))['tag_name']==os.environ['RELEASE_TAG']
+          for item in manifest['files']:
+              path=Path('assembled')/item['name']
+              assert path.stat().st_size==item['bytes']
+              for attempt in range(3):
+                  existing=assets().get(path.name)
+                  if existing and existing['state']=='uploaded':
+                      assert existing['size']==item['bytes'] and existing['digest']=='sha256:'+item['sha256']
+                      break
+                  if existing:
+                      assert existing['state']=='starter' and existing.get('digest') is None
+                      request('/releases/assets/'+str(existing['id']),method='DELETE')
+                  result=subprocess.run(['curl','--silent','--show-error','--fail-with-body','-X','POST',
+                      '-H','Authorization: Bearer '+token,'-H','Content-Type: application/octet-stream',
+                      '--data-binary','@'+str(path),
+                      'https://uploads.github.com/repos/'+repo+'/releases/'+str(release_id)+'/assets?name='+path.name],
+                      capture_output=True,text=True,timeout=900)
+                  if result.returncode==0:
+                      row=json.loads(result.stdout)
+                      assert row['state']=='uploaded' and row['size']==item['bytes'] and row['digest']=='sha256:'+item['sha256']
+                      break
+                  assert attempt<2,'Full APK upload failed after bounded retries'
+                  time.sleep(3)
+              print('FULL_APK_VERIFIED',path.name,item['sha256'],flush=True)
+          PY
       - name: Remove only temporary transfer assets
         run: |
           python3 - <<'PY'
