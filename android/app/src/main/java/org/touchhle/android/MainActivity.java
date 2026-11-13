@@ -576,7 +576,7 @@ public class MainActivity extends SDLActivity {
                         fsr3FgSynthetic, fsr3FgProbe, bundledTextureDir);
 
                 List<String> args = new ArrayList<>();
-                args.add("--preferred-languages=zh-Hans,zh");
+                if (chapterOverlayEnabled()) args.add("--preferred-languages=zh-Hans,zh");
                 args.add("--scale-hack=" + scale);
                 args.add(fpsCap == 0 ? "--fps-limit=off" : "--fps-limit=" + fpsCap);
                 if (debugLogs) {
@@ -656,6 +656,8 @@ public class MainActivity extends SDLActivity {
             boolean fsr3GpuDepth, boolean fsr3Async, boolean fsr3DirectOutput,
             boolean fsr3DiagReadback, boolean fsr3Trace, boolean fsr3Force,
             boolean fsr3FgSynthetic, boolean fsr3FgProbe, File bundledTextureDir) {
+        setEnv("TOUCHHLE_DS_NATIVE_EFFECTS",getIntent().getBooleanExtra("advanced_lighting",
+                LaunchReview.lighting(getSharedPreferences(LauncherActivity.PREFS,MODE_PRIVATE))) ? "1" : "0");
         File base = getExternalFilesDir(null);
         if (base == null) {
             base = getFilesDir();

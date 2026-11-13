@@ -134,13 +134,13 @@ final class RuntimeStorage {
         return d;
     }
     private static boolean portablePreference(String key) {
-        return !MODE.equals(key) && !ROOT.equals(key) && !"ui_language".equals(key)
+        return !MODE.equals(key) && !ROOT.equals(key) && !"ui_language".equals(key) && !LaunchReview.REVIEWED.equals(key)
                 && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
     }
     private static char preferenceType(String key) {
         if ("quality_preset".equals(key)||SaveNodeMonitor.KEY_SESSION.equals(key))return 's';
         for(String name:new String[]{"scale_hack","fps_cap","present_fsr","present_sharpen","shadow_boost"})if(name.equals(key))return 'i';
-        for(String name:new String[]{"show_fps","debug_logs","dump_frames","pc_compat","viewport_stretch","fast_present","skip_readback","gpu_present_copy","aa_mode","fsr3_ahb_probe","fsr3_frame_generation","fsr3_real_depth","fsr3_gpu_depth","fsr3_async","fsr3_direct_output","fsr3_force_unsupported","overlay_enabled",SaveNodeMonitor.KEY_ENABLED,SaveNodeMonitor.KEY_IMAGES})if(name.equals(key))return 'b';
+        for(String name:new String[]{"show_fps","debug_logs","dump_frames","pc_compat","viewport_stretch","fast_present","skip_readback","gpu_present_copy","aa_mode","fsr3_ahb_probe","fsr3_frame_generation","fsr3_real_depth","fsr3_gpu_depth","fsr3_async","fsr3_direct_output","fsr3_force_unsupported","overlay_enabled",LaunchReview.LIGHTING,SaveNodeMonitor.KEY_ENABLED,SaveNodeMonitor.KEY_IMAGES})if(name.equals(key))return 'b';
         return 0;
     }
     private static boolean integerInRange(String key,int value) {

@@ -146,6 +146,7 @@ public class LauncherActivity extends Activity {
     private Button sharpenButton;
     private Button shadowBoostButton;
     private int scaleHack;
+    private TextView primaryResolution;
     private int fpsCap;
     private boolean stretchViewport;
     private int fsrMode;
@@ -548,10 +549,26 @@ public class LauncherActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        CheckBox overlayToggle = addToggle(qualityBlock, L("高清图文组件"), L("章节、任务追踪与字幕的总开关；样式在外部预览器调整。"),
+        addSection(qualityBlock,L("01  /  主要画面设置"));
+        CheckBox overlayToggle = addToggle(qualityBlock, L("高清中文文字组件（章节 / 任务 / 字幕）"), L("章节、任务追踪与字幕的总开关；样式在外部预览器调整。"),
                 prefs.getBoolean("overlay_enabled", true));
-        overlayToggle.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("overlay_enabled", checked).apply());
+        overlayToggle.setOnCheckedChangeListener((button, checked) -> {prefs.edit().putBoolean("overlay_enabled", checked).apply();saveCurrentSettings();});
 
+        View displayAnchor=new View(this);qualityBlock.addView(displayAnchor,new LinearLayout.LayoutParams(1,1));
+        scaleButton = addCycleButton(qualityBlock, "", v -> {
+            scaleHack = scaleHack >= 3 ? 1 : scaleHack + 1;
+            updateChoiceLabels();onQualitySettingChanged();
+        });
+        primaryResolution=text(LaunchReview.resolution(this,scaleHack,stretchViewport),13,COLOR_TEXT,false);
+        qualityBlock.addView(primaryResolution);
+        CheckBox lightingToggle=addToggle(qualityBlock,L("高级光影"),
+                L("恢复护甲与环境反光、动态灯光等原生高档效果；普通版默认关闭，HD版默认开启。"),LaunchReview.lighting(prefs));
+        lightingToggle.setOnCheckedChangeListener((button,checked)-> {
+            prefs.edit().putBoolean(LaunchReview.LIGHTING,checked).apply();saveCurrentSettings();
+        });
+        TextView languageNote=text(L("高清文字目前为中文。可关闭高清中文组件，使用游戏原生文字与语言设置。欢迎多语言用户投稿；若暂无投稿，我们计划在R8之前支持其他语言的高清文字组件。"),12,COLOR_MUTED,false);
+        languageNote.setPadding(0,dp(8),0,dp(16));qualityBlock.addView(languageNote);
+        View presetAnchor=new View(this);qualityBlock.addView(presetAnchor,new LinearLayout.LayoutParams(1,1));
         addSection(qualityBlock, L("02  /  画质模式"));
         TextView presetHint = text(
                 L("推荐：原生 3× + FXAA + CAS 0.5，FSR3 关闭。")
@@ -836,11 +853,6 @@ public class LauncherActivity extends Activity {
             showFps = checked;
             saveCurrentSettings();
         });
-        scaleButton = addCycleButton(advancedContainer, "", v -> {
-            scaleHack = scaleHack >= 3 ? 1 : scaleHack + 1;
-            updateChoiceLabels();
-            onQualitySettingChanged();
-        });
         capButton = addCycleButton(advancedContainer, "", v -> {
             fpsCap = fpsCap == 0 ? 70 : (fpsCap == 70 ? 60 : (fpsCap == 60 ? 30 : 0));
             updateChoiceLabels();
@@ -1016,7 +1028,8 @@ public class LauncherActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.HORIZONTAL);
         page.setBackgroundColor(COLOR_BG);
-        View rail = buildNavigationRail(scroll, hero, qualityBlock, advancedContainer, saveBlock);
+        content.removeView(qualityBlock);content.addView(qualityBlock,0);
+        View rail = buildNavigationRail(scroll, hero, overlayToggle, displayAnchor, presetAnchor, advancedContainer, saveBlock);
         page.addView(rail, new LinearLayout.LayoutParams(dp(190),
                 LinearLayout.LayoutParams.MATCH_PARENT));
 
@@ -1048,7 +1061,7 @@ public class LauncherActivity extends Activity {
     }
 
     private View buildNavigationRail(
-            ScrollView scroll, View overview, View quality, View advanced, View saves) {
+            ScrollView scroll, View overview, View quality, View display, View presets, View advanced, View saves) {
         LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
         rail.setPadding(dp(18), dp(24), dp(18), dp(18));
@@ -1068,18 +1081,20 @@ public class LauncherActivity extends Activity {
         rail.addView(brandName);
 
         rail.addView(railButton(L("00   关于"), () -> scrollToSection(scroll, overview)));
-        rail.addView(railButton(L("01   画质"), () -> scrollToSection(scroll, quality)));
-        rail.addView(railButton(L("02   实验参数"), () -> {
+        rail.addView(railButton(L("01   高清文字"), () -> scrollToSection(scroll, quality)));
+        rail.addView(railButton(L("02   显示与光影"), () -> scrollToSection(scroll, display)));
+        rail.addView(railButton(L("03   画质预设"), () -> scrollToSection(scroll, presets)));
+        rail.addView(railButton(L("04   操作与参数"), () -> {
             advancedExpanded = true;
             updateAdvancedVisibility();
             scrollToSection(scroll, advanced);
         }));
-        rail.addView(railButton(L("03   存档与文件"), () -> scrollToSection(scroll, saves)));
+        rail.addView(railButton(L("05   存档与文件"), () -> scrollToSection(scroll, saves)));
 
         View spacer = new View(this);
         rail.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1.0f));
         TextView footer = text(
-                "PC CONTENT AUTHORITY\nANDROID NATIVE PATH\n\n"
+                L(BuildConfig.BUNDLED_TEXTURES ? "HD版 · 内置4×纹理" : "普通版 · 原版纹理") + "\n\n"
                         + BuildConfig.VERSION_NAME,
                 10, COLOR_MUTED, false);
         footer.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL));
@@ -1131,6 +1146,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void updateChoiceLabels() {
+        if (primaryResolution!=null) primaryResolution.setText(LaunchReview.resolution(this,scaleHack,stretchViewport));
         String scaleText;
         if (scaleHack <= 1) {
             scaleText = L("内部渲染：1× 性能");
@@ -1554,6 +1570,16 @@ public class LauncherActivity extends Activity {
     }
 
     private void startGame() {
+        if (!prefs.getBoolean(LaunchReview.REVIEWED,false)) {
+            LaunchReview.show(this,prefs,scaleHack,stretchViewport,(text,lighting,scale)-> {
+                scaleHack=scale;
+                prefs.edit().putBoolean("overlay_enabled",text).putBoolean(LaunchReview.LIGHTING,lighting)
+                        .putBoolean(LaunchReview.REVIEWED,true).apply();
+                saveCurrentSettings();
+                startGameConfirmed();
+            });
+            return;
+        }
         startGameConfirmed();
     }
     private void startGameConfirmed() {
@@ -1672,6 +1698,7 @@ public class LauncherActivity extends Activity {
         intent.putExtra("skip_readback", skipReadback);
         intent.putExtra("gpu_present_copy", gpuPresentCopy);
         intent.putExtra("bundled_textures", bundledTextures);
+        intent.putExtra("advanced_lighting",getIntent().getBooleanExtra("advanced_lighting",LaunchReview.lighting(prefs)));
         intent.putExtra("scale_hack", scale);
         intent.putExtra("fps_cap", cap);
         intent.putExtra("viewport_stretch", stretch);
