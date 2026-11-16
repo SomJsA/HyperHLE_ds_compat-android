@@ -1,6 +1,6 @@
 # Android R5.1 language contract
 
-Local candidate only; no publication is authorized. Evidence: `E:/CodexProjects/DeadSpaceLegacy/report/android-r51-multilingual-20261117`.
+R5.1 publication was explicitly authorized on 2026-11-17. The earlier local-only hold is superseded for this Android release. See the release notes, BUILD-INPUTS.json and the published acceptance summary.
 
 The launcher UI has Chinese and English. Game text is independently selected from Chinese (the accepted Tieba bank), English, French, German, Italian, Korean and Spanish. The original Japanese table contains 706 null value references and no translated text; the Japanese option explicitly falls back to English in both native menus and HD layers. Do not present that fallback as Japanese visual acceptance.
 
