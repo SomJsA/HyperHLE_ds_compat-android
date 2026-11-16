@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.text.BreakIterator;
+import java.util.Locale;
 
 /** Plans only when text/style/viewport changes; page choice uses the guest clock. */
 final class CaptionPresentation {
@@ -37,7 +39,9 @@ final class CaptionPresentation {
         return android.text.TextUtils.join("\n",lines);
     }
     private StaticLayout layout(String value,TextPaint paint,int width,float spacing){
-        return new StaticLayout(wrap(value,paint,width),new TextPaint(paint),width,alignment,spacing,0,false);
+        // StaticLayout already keeps English words together. The custom
+        // character wrapping is only needed for the Chinese punctuation rules.
+        return new StaticLayout(!HdTextLanguage.isChinese()?value:wrap(value,paint,width),new TextPaint(paint),width,alignment,spacing,0,false);
     }
     private void split(Plan p,String value,TextPaint paint,int width,float spacing){
         Matcher parts=CLAUSE.matcher(value);String page="";
@@ -46,7 +50,10 @@ final class CaptionPresentation {
             if(layout(page+part,paint,width,spacing).getLineCount()<=2){page+=part;continue;}
             if(!page.isEmpty()){p.text.add(page);page="";}
             ArrayList<String> units=new ArrayList<>();
-            for(int i=0;i<part.length();){int next=part.offsetByCodePoints(i,1);String c=part.substring(i,next);
+            if(!HdTextLanguage.isChinese()){
+                BreakIterator words=BreakIterator.getLineInstance(HdTextLanguage.lineLocale());words.setText(part);
+                int begin=words.first();for(int end=words.next();end!=BreakIterator.DONE;begin=end,end=words.next())units.add(part.substring(begin,end));
+            }else for(int i=0;i<part.length();){int next=part.offsetByCodePoints(i,1);String c=part.substring(i,next);
                 if("，。！？；：、…）》」』】,.!?;:)".contains(c)&&!units.isEmpty()){int last=units.size()-1;units.set(last,units.get(last)+c);}else units.add(c);i=next;
             }
             for(String unit:units){

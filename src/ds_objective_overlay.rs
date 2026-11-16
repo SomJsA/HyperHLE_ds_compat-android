@@ -59,7 +59,11 @@ pub(crate) fn observe(env: &mut Environment) {
             if !state.pending { state.index = None; }
             state.owner = owner; state.played = false;
         }
-        if owner == (0,0) || (phase == 0 && state.played) { state.index = None; state.played = false; }
+        // Native locator replays ResetPopup without a new initializer event.
+        // Retain its mapped text while this HUD/world owner remains alive.
+        // Native phase/eligibility still control visibility; owner replacement
+        // and unknown new objective events still clear the mapped text.
+        if owner == (0,0) || (phase == 0 && state.played) { state.played = false; }
         state.pending = false;
         if matches!(phase, 1..=3) { state.played = true; }
         state.index

@@ -2402,6 +2402,8 @@ fn glCompressedTexSubImage2D(
     image_size: GLsizei,
     data: ConstVoidPtr,
 ) {
+    if let Some(state)=super::eagl::shader_compat_state(env) {state.borrow().invalidate_upload(target,level);}
+
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let data = mem
             .ptr_at(data.cast::<u8>(), image_size.try_into().unwrap())
@@ -2729,6 +2731,7 @@ unsafe fn guard_client_vertex_arrays(gles: &mut dyn GLES, mem: &Mem) -> Vec<GLui
 }
 
 fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsizei) {
+    let shader_fog_key=super::eagl::shader_no_fog_key(env);
     {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -2756,6 +2759,7 @@ fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsize
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let disabled_arrays = guard_client_vertex_arrays(gles, mem);
         let fog_state_backup = clamp_fog_state_values(gles);
+        let shader_fog_saved=shader_fog_key.and_then(|key|crate::gles::ds_fog_scope::begin(gles,key));
         if std::env::var_os("TOUCHHLE_POTATO_NATIVE_GLES2_PC_STATE").is_some() {
             static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -2772,6 +2776,7 @@ fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsize
         }
 
         gles.DrawArrays(mode, first, count);
+        crate::gles::ds_fog_scope::end(gles,shader_fog_saved);
         restore_fog_state_values(gles, fog_state_backup);
         for index in disabled_arrays {
             gles.EnableVertexAttribArray(index);
@@ -2785,6 +2790,7 @@ fn glDrawElements(
     type_: GLenum,
     indices: ConstVoidPtr,
 ) {
+    let shader_fog_key=super::eagl::shader_no_fog_key(env);
     {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -2813,6 +2819,7 @@ fn glDrawElements(
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let disabled_arrays = guard_client_vertex_arrays(gles, mem);
         let fog_state_backup = clamp_fog_state_values(gles);
+        let shader_fog_saved=shader_fog_key.and_then(|key|crate::gles::ds_fog_scope::begin(gles,key));
         if std::env::var_os("TOUCHHLE_POTATO_NATIVE_GLES2_PC_STATE").is_some() {
             static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -2835,6 +2842,7 @@ fn glDrawElements(
             gles11::ELEMENT_ARRAY_BUFFER_BINDING,
         );
         gles.DrawElements(mode, count, type_, indices);
+        crate::gles::ds_fog_scope::end(gles,shader_fog_saved);
         restore_fog_state_values(gles, fog_state_backup);
         for index in disabled_arrays {
             gles.EnableVertexAttribArray(index);
@@ -5460,6 +5468,7 @@ fn glReadPixels(
     })
 }
 fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
+    let shader_state=super::eagl::shader_compat_state(env);
     if env
         .framework_state
         .opengles
@@ -5474,23 +5483,40 @@ fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
     with_ctx_and_mem(env, |gles, mem| {
         let n_usize: GuestUSize = n.try_into().unwrap();
         let textures = mem.ptr_at_mut(textures, n_usize);
-        unsafe { gles.GenTextures(n, textures) }
+        unsafe { gles.GenTextures(n, textures); }
+        if let Some(state)=&shader_state {
+            let names=unsafe{std::slice::from_raw_parts(textures,n_usize as usize)};
+            let mut state=state.borrow_mut();for &name in names {state.generated(name);}
+        }
     })
 }
 fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint>) {
+    let shader_state=super::eagl::shader_compat_state(env);
     with_ctx_and_mem(env, |gles, mem| {
         let n_usize: GuestUSize = n.try_into().unwrap();
         let textures = mem.ptr_at(textures, n_usize);
+        if let Some(state)=&shader_state {
+            let names=unsafe{std::slice::from_raw_parts(textures,n_usize as usize)};
+            let mut state=state.borrow_mut();for &name in names {state.delete(name);}
+        }
         unsafe { gles.DeleteTextures(n, textures) }
     })
 }
 fn glActiveTexture(env: &mut Environment, texture: GLenum) {
-    with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ActiveTexture(texture) })
+    let shader_state=super::eagl::shader_compat_state(env);
+    let actual=with_ctx_and_mem(env, |gles, _mem| unsafe {
+        gles.ActiveTexture(texture);
+        if texture>=gles11::TEXTURE0 && texture<gles11::TEXTURE0+8 {texture}
+        else {let mut actual=0;gles.GetIntegerv(gles11::ACTIVE_TEXTURE,&mut actual);actual as u32}
+    });
+    if let Some(state)=shader_state {state.borrow_mut().active(actual);}
+
 }
 fn glIsTexture(env: &mut Environment, texture: GLuint) -> GLboolean {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.IsTexture(texture) })
 }
 fn glBindTexture(env: &mut Environment, target: GLenum, texture: GLuint) {
+    let shader_state=super::eagl::shader_compat_state(env);
     if trace_potatogold_render() {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNT: AtomicU32 = AtomicU32::new(0);
@@ -5506,7 +5532,8 @@ fn glBindTexture(env: &mut Environment, target: GLenum, texture: GLuint) {
 
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.BindTexture(target, texture)
-    })
+    });
+    if let Some(state)=shader_state {state.borrow_mut().bind(target,texture);}
 }
 /// If `pname` is `GL_TEXTURE_MIN_FILTER` and `param` is a mipmap min-filter
 /// (e.g. `GL_NEAREST_MIPMAP_LINEAR`), return the closest non-mipmap value
@@ -6071,7 +6098,7 @@ fn ds_apply_anisotropy(gles: &mut dyn GLES) {
     }
 }
 
-fn ds_finish_texture_upload(gles: &mut dyn GLES) {
+fn ds_finish_texture_upload(gles: &mut dyn GLES, payload: bool) {
     use crate::ds_texture_upload_sync::Mode;
     static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
     let mode = *MODE.get_or_init(|| {
@@ -6083,11 +6110,18 @@ fn ds_finish_texture_upload(gles: &mut dyn GLES) {
         log!("[DStexture-sync] effective policy {:?}; explicit0/off disables CPU finish", mode);
         mode
     });
-    if mode == Mode::Off { return; }
+    if !should_finish_texture_upload(mode, payload) { return; }
     let profile_start = crate::ds_execution_profile::begin_exact();
     unsafe { match mode { Mode::Finish => gles.Finish(), Mode::Flush => gles.Flush(), Mode::Off => unreachable!() } }
     crate::ds_execution_profile::end_host(
         if mode == Mode::Finish { "<texture-upload-glFinish>" } else { "<texture-upload-glFlush>" }, profile_start);
+}
+
+/// Empty or zero-area uploads allocate/validate storage but carry no pixel
+/// payload whose completion needs a driver finish. Keep the GL call ordered
+/// while avoiding a full flush/finish on those paths.
+fn should_finish_texture_upload(mode: crate::ds_texture_upload_sync::Mode, payload: bool) -> bool {
+    payload && mode != crate::ds_texture_upload_sync::Mode::Off
 }
 
 fn glTexImage2D(
@@ -6102,6 +6136,9 @@ fn glTexImage2D(
     type_: GLenum,
     pixels: ConstVoidPtr,
 ) {
+    let shader_texture_state=super::eagl::shader_compat_state(env);
+    if let Some(state)=&shader_texture_state {state.borrow().invalidate_upload(target,level);}
+
     {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -6283,6 +6320,7 @@ fn glTexImage2D(
             // a later mip level or a storage-only (`pixels == NULL`) call must
             // not blank out the key of the level-0 upload it belongs to.
             if key != 0 {
+                if let Some(state)=&shader_texture_state {state.borrow_mut().uploaded(target,texture as u32,key);}
                 crate::ds_texid::record(
                     texture as u32,
                     crate::ds_texid::TexIdent {
@@ -6401,7 +6439,7 @@ fn glTexImage2D(
             type_,
             pixels,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !pixels.is_null() && width > 0 && height > 0);
         if level == 0 {
             ds_apply_anisotropy(gles);
         }
@@ -6440,6 +6478,8 @@ fn glTexSubImage2D(
     type_: GLenum,
     pixels: ConstVoidPtr,
 ) {
+    if let Some(state)=super::eagl::shader_compat_state(env) {state.borrow().invalidate_upload(target,level);}
+
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let pixel_count: GuestUSize = width.checked_mul(height).unwrap().try_into().unwrap();
         let size = image_size_estimate(pixel_count, format, type_);
@@ -6470,7 +6510,7 @@ fn glTexSubImage2D(
         gles.TexSubImage2D(
             target, level, xoffset, yoffset, width, height, format, type_, pixels,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !pixels.is_null() && width > 0 && height > 0);
     })
 }
 fn glCompressedTexImage2D(
@@ -6484,6 +6524,9 @@ fn glCompressedTexImage2D(
     image_size: GLsizei,
     data: ConstVoidPtr,
 ) {
+    let shader_texture_state=super::eagl::shader_compat_state(env);
+    if let Some(state)=&shader_texture_state {state.borrow().invalidate_upload(target,level);}
+
     {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -6588,6 +6631,7 @@ fn glCompressedTexImage2D(
                     internalformat,
                     raw,
                 );
+                if let Some(state)=&shader_texture_state {state.borrow_mut().uploaded(target,texture as u32,tex_key);}
                 crate::ds_texid::record(
                     texture as u32,
                     crate::ds_texid::TexIdent {
@@ -6894,7 +6938,7 @@ fn glCompressedTexImage2D(
             image_size,
             data,
         );
-        ds_finish_texture_upload(gles);
+        ds_finish_texture_upload(gles, !data.is_null() && image_size > 0 && width > 0 && height > 0);
         if level == 0 {
             ds_apply_anisotropy(gles);
         }
@@ -7055,6 +7099,8 @@ fn glCopyTexImage2D(
     height: GLsizei,
     border: GLint,
 ) {
+    if let Some(state)=super::eagl::shader_compat_state(env) {state.borrow().invalidate_upload(target,level);}
+
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.CopyTexImage2D(target, level, internalformat, x, y, width, height, border);
         record_copytex_key(gles, target, x, y, level, width, height, TAG_COPYTEX_IMAGE);
@@ -7071,6 +7117,8 @@ fn glCopyTexSubImage2D(
     width: GLsizei,
     height: GLsizei,
 ) {
+    if let Some(state)=super::eagl::shader_compat_state(env) {state.borrow().invalidate_upload(target,level);}
+
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.CopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
         record_copytex_key(
@@ -8586,6 +8634,7 @@ fn glUniform1f(env: &mut Environment, location: GLint, v0: GLfloat) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.Uniform1f(location, v0) });
 }
 fn glUniform2f(env: &mut Environment, location: GLint, v0: GLfloat, v1: GLfloat) {
+    let (v0,v1)=crate::ds_shader_opening_fog::parameters(env,location,v0,v1);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.Uniform2f(location, v0, v1)
     });
@@ -10286,6 +10335,8 @@ fn glProgramParameteri(env: &mut Environment, program: GLuint, pname: GLenum, va
 }
 
 unsafe fn clamp_fog_state_values(gles: &mut dyn GLES) -> Option<(f32, f32)> {
+    // ES2/3 has shader fog; fixed-function enum queries poison GL error state.
+    if gles.is_es2() { return None; }
     let mut fog_enabled: GLboolean = 0;
     gles.GetBooleanv(gles11::FOG, &mut fog_enabled);
     if fog_enabled != 0 {
@@ -10813,4 +10864,43 @@ mod shader_preprocessor_normalization_tests {
         assert!(out.contains("#endif //trailing comment"));
         assert!(!out.contains("#endif//trailing comment"));
     }
+}
+
+#[cfg(test)]
+mod texture_upload_sync_tests {
+    use super::should_finish_texture_upload;
+    use crate::ds_texture_upload_sync::Mode;
+
+    #[test]
+    fn empty_uploads_do_not_finish_the_driver() {
+        for mode in [Mode::Off, Mode::Flush, Mode::Finish] {
+            assert!(!should_finish_texture_upload(mode, false));
+        }
+    }
+
+    #[test]
+    fn payload_uploads_keep_the_requested_policy() {
+        assert!(!should_finish_texture_upload(Mode::Off, true));
+        assert!(should_finish_texture_upload(Mode::Flush, true));
+        assert!(should_finish_texture_upload(Mode::Finish, true));
+    }
+}
+
+#[cfg(test)]
+mod r4_fixed_fog_boundary_tests {
+    use super::*;
+    struct Driver { shader:bool, enabled:bool, start:f32, end:f32, queries:u32, writes:Vec<(GLenum,f32)> }
+    impl GLES for Driver {
+        fn is_es2(&self)->bool {self.shader}
+        unsafe fn GetBooleanv(&mut self,p:GLenum,v:*mut GLboolean) {assert!(!self.shader,"fixed-function query on shader driver");assert_eq!(p,gles11::FOG);self.queries+=1;*v=self.enabled as GLboolean;}
+        unsafe fn GetFloatv(&mut self,p:GLenum,v:*mut GLfloat) {self.queries+=1;*v=match p {gles11::FOG_START=>self.start,gles11::FOG_END=>self.end,_=>panic!("unexpected query")};}
+        unsafe fn Fogf(&mut self,p:GLenum,v:GLfloat) {self.writes.push((p,v));}
+    }
+    fn driver(shader:bool,enabled:bool,start:f32,end:f32)->Driver {Driver {shader,enabled,start,end,queries:0,writes:Vec::new()}}
+    #[test]
+    fn shader_draws_never_query_fixed_function_fog() {let mut g=driver(true,true,2.,2.);unsafe {assert!(clamp_fog_state_values(&mut g).is_none());}assert_eq!(g.queries,0);assert!(g.writes.is_empty());}
+    #[test]
+    fn fixed_function_degenerate_range_still_clamps_and_restores() {let mut g=driver(false,true,2.,2.);unsafe {let old=clamp_fog_state_values(&mut g);assert_eq!(old,Some((2.,2.)));restore_fog_state_values(&mut g,old);}assert_eq!(g.queries,3);assert_eq!(g.writes,vec![(gles11::FOG_START,1.999),(gles11::FOG_START,2.),(gles11::FOG_END,2.)]);}
+    #[test]
+    fn fixed_function_disabled_and_valid_ranges_keep_original_state() {for (enabled,start,end,n) in [(false,2.,2.,1),(true,1.,2.,3)] {let mut g=driver(false,enabled,start,end);unsafe {assert!(clamp_fog_state_values(&mut g).is_none());}assert_eq!(g.queries,n);assert!(g.writes.is_empty());}}
 }

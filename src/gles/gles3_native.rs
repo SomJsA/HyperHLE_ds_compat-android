@@ -966,6 +966,12 @@ impl GLES for GLES3Native<'_> {
     unsafe fn GetAttribLocation(&mut self, program: GLuint, name: *const GLchar) -> GLint {
         gles30::GetAttribLocation(program, name)
     }
+    unsafe fn GetUniformfv(&mut self, program: GLuint, location: GLint, params: *mut GLfloat) {
+        gles30::GetUniformfv(program, location, params)
+    }
+    unsafe fn GetUniformiv(&mut self, program: GLuint, location: GLint, params: *mut GLint) {
+        gles30::GetUniformiv(program, location, params)
+    }
     unsafe fn GetUniformLocation(&mut self, program: GLuint, name: *const GLchar) -> GLint {
         gles30::GetUniformLocation(program, name)
     }
@@ -1525,6 +1531,14 @@ impl GLES for GLES3Native<'_> {
         gles30::BlitFramebuffer(
             src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
         )
+    }
+    // APPLE and core multisample storage have identical arguments. The
+    // legacy default deliberately allocates one sample; ES3/core backends
+    // must use their real allocation before reporting MSAA as active.
+    unsafe fn RenderbufferStorageMultisampleAPPLE(
+        &mut self,target:GLenum,samples:GLsizei,internalformat:GLenum,width:GLsizei,height:GLsizei,
+    ) {
+        gles30::RenderbufferStorageMultisample(target,samples,internalformat,width,height)
     }
     unsafe fn RenderbufferStorageMultisample(
         &mut self,

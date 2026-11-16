@@ -26,6 +26,10 @@ pub(crate) struct State {
     last: Option<(u32, u32, u32, u32)>,
     index: Option<u32>,
     serial: u32,
+    timing_owner: (u32, u32),
+    cues: Vec<(u32, u32, i64)>,
+    display_key: Option<(u32, u32, u32)>,
+    display_serial: u32,
 }
 
 fn suppress(env: &mut Environment, desired: bool) -> bool {
@@ -131,12 +135,53 @@ pub(crate) fn observe(env: &mut Environment) {
             index.is_some()
         );
     }
+    if env.framework_state.opengles.ds_subtitle.timing_owner != (world, track) {
+        let mut cues = Vec::new();
+        if let Some((begin, end, times)) = word(env, track.saturating_add(0x10))
+            .zip(word(env, track.saturating_add(0x14)))
+            .zip(word(env, track.saturating_add(0x24)))
+            .and_then(|((a,b),t)| policy::valid_segment(a,b,0).map(|_|(a,b,t))) {
+            let count = (end - begin) / 20;
+            if times >= 0x1000 && word(env,track.saturating_add(0x28))
+                .and_then(|end|end.checked_sub(times)) == Some(count * 4) {
+                for i in 0..count {
+                    let address = begin + i * 20;
+                    // The opening track includes empty IDs for intentional
+                    // silence. Keep their durations in the absolute timeline.
+                    let id = if word(env,address).zip(word(env,address+4))
+                        .map(|(a,b)|a==b).unwrap_or(false) { Some(String::new()) }
+                        else { wide(env,address) };
+                    let cue = id.zip(word(env, times + i * 4));
+                    if let Some((id, duration)) = cue {
+                        if let Some(index) = if id.is_empty() { Some(0) } else { policy::entry(&id) } {
+                            if (100..=600_000).contains(&duration) {
+                                cues.push((index, duration, policy::opening_offset(&id)));
+                                continue;
+                            }
+                        }
+                    }
+                    cues.clear(); break;
+                }
+            }
+        }
+        let state = &mut env.framework_state.opengles.ds_subtitle;
+        state.timing_owner = (world, track);
+        state.cues = cues;
+    }
     let state = &env.framework_state.opengles.ds_subtitle;
     let finished=env.mem.get_bytes_fallible(crate::mem::ConstVoidPtr::from_bits(track),1).and_then(|v|v.first()).copied();
-    let value=policy::visible_value(state.serial,state.index,finished);
-    let desired = value != 0 && READY.load(Ordering::Acquire);
+    let adjusted = if finished == Some(0) && !state.cues.is_empty() {
+        word(env, track.saturating_add(8)).and_then(|left|
+            policy::adjusted_cue(&state.cues, segment, left as i32))
+    } else { None };
+    let uses_timeline = !state.cues.is_empty();
+    let desired = READY.load(Ordering::Acquire);
     let patched = suppress(env, desired);
-    let timing=if desired&&patched&&value!=0 {
+    let state = &env.framework_state.opengles.ds_subtitle;
+    let (display_segment, index) = if uses_timeline {
+        adjusted.map(|(position,index,_)|(position,Some(index))).unwrap_or((u32::MAX,None))
+    } else { (segment, state.index.filter(|_|finished==Some(0))) };
+    let native_timing=if desired&&patched&&index.is_some() {
         let caption_bytes=word(env,track.saturating_add(0x10)).zip(word(env,track.saturating_add(0x14)))
             .and_then(|(a,b)|b.checked_sub(a)).filter(|n|*n>0&&*n%20==0&&*n<=20*512).map(|n|n/20*4);
         let duration=word(env,track.saturating_add(0x24)).zip(word(env,track.saturating_add(0x28)))
@@ -144,6 +189,18 @@ pub(crate) fn observe(env: &mut Environment) {
             .and_then(|(a,_)|a.checked_add(segment*4)).and_then(|a|word(env,a));
         duration.zip(word(env,track.saturating_add(8))).map(|(total,left)|policy::timing_value(total,left as i32)).unwrap_or(0)
     }else{0};
+    let state = &mut env.framework_state.opengles.ds_subtitle;
+    let key = index.map(|_|(world,track,display_segment));
+    if key != state.display_key {
+        state.display_key = key;
+        state.display_serial = state.display_serial.wrapping_add(1).max(1);
+        if let Some(index) = index {
+            echo!("[DSsubtitle-display] serial={} index={} cue={} timing_adjusted={}",
+                state.display_serial,index,display_segment,uses_timeline);
+        }
+    }
+    let value = policy::visible_value(state.display_serial,index,finished);
+    let timing = adjusted.map(|(_,_,timing)|timing).unwrap_or(native_timing);
     TIMING_SERIAL.store(0,Ordering::Release);
     TIMING.store(timing,Ordering::Release);
     TIMING_SERIAL.store((value>>32) as u32,Ordering::Release);

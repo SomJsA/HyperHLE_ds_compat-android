@@ -16,7 +16,10 @@ final class ObjectiveOverlay {
         long value=desired ? nativeSnapshot():0; int index=(int)(value&0xffff);
         if (index<=0 || index>=OverlayTexts.ids.length) { return; }
         String id=OverlayTexts.ids[index];
-        OverlayStyle.drawObjective(canvas,OverlayStyle.layer("objective",id),OverlayStyle.text(id,OverlayTexts.text[index],false),
-                font,titleFont,left,top,cw,ch);
+        boolean english=HdTextLanguage.isEnglish();
+        String fallback=OverlayTexts.value(id,english);
+        OverlayStyle.drawObjective(canvas,OverlayStyle.layer("objective",id),
+                OverlayTexts.styled(id),
+                HdTextLanguage.isChinese()?"目标：":OverlayTexts.selected("CURRENT_OBJECTIVE"), font,titleFont,left,top,cw,ch);
     }
 }

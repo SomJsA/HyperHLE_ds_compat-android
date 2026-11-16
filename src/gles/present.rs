@@ -106,6 +106,35 @@ fn present_aa_mode() -> bool {
         .unwrap_or(false)
 }
 
+/// Launcher-controlled experimental eye-protection mode. It is a final GPU
+/// pass only: no previous frame and no CPU full-frame readback are required.
+fn present_black_floor_enabled() -> bool {
+    std::env::var("TOUCHHLE_DS_SAFE_BLACK_FLOOR")
+        .ok()
+        .map(|value| {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct BlackFloorParams {
+    floor: f32,
+    threshold: f32,
+}
+
+fn present_black_floor_params(enabled: bool) -> Option<BlackFloorParams> {
+    if !enabled { return None; }
+    let gray = std::env::var("TOUCHHLE_DS_SAFE_BLACK_GRAY")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(75)
+        .min(160);
+    let floor = gray as f32 / 255.0;
+    Some(BlackFloorParams { floor, threshold: (floor + 0.12).min(1.0) })
+}
+
 /// The little shader program used by the present-layer sharpen. Locations are
 /// cached with the program; `a_pos`/`a_uv` are bound to slots 6/7 so they never
 /// collide with the guest's own attribute layout.
@@ -122,6 +151,8 @@ struct PresentSharpenProgram {
     u_fsr: i32,
     u_aa: i32,
     u_source_size: i32,
+    u_black_floor: i32,
+    u_black_threshold: i32,
 }
 
 /// GL names and failure flags belong to one actual GL context, including FBOs
@@ -129,6 +160,7 @@ struct PresentSharpenProgram {
 /// the guest, Core Animation compositor or Android's private shader context.
 #[derive(Default)]
 pub struct PresentState {
+    quad_vbo: u32,
     program: Option<PresentSharpenProgram>,
     shader_failed: bool,
     fsr_target: Option<PresentFsrTarget>,
@@ -146,6 +178,7 @@ impl PresentState {
     /// The owning GL context must be current. Do not call this from Drop:
     /// destruction of a Rust handle does not imply its GL context is current.
     pub(crate) unsafe fn release(&mut self, gles: &mut dyn GLES) {
+        if self.quad_vbo != 0 { gles.DeleteBuffers(1,&self.quad_vbo); self.quad_vbo=0; }
         for target in [self.fsr_target.take(), self.post_target.take()].into_iter().flatten() {
             gles.DeleteFramebuffersOES(1, &target.framebuffer);
             gles.DeleteTextures(1, &target.texture);
@@ -221,6 +254,8 @@ unsafe fn present_sharpen_program(gles: &mut dyn GLES, state: &mut PresentState)
         uniform float uShadow;\n\
         uniform float uFsr;\n\
         uniform float uAA;\n\
+        uniform float uBlackFloor;\n\
+        uniform float uBlackThreshold;\n\
         vec4 sampleAt(vec2 uv) {\n\
             vec2 lo = uTexel * 0.5;\n\
             vec2 hi = vec2(1.0) - lo;\n\
@@ -400,9 +435,19 @@ unsafe fn present_sharpen_program(gles: &mut dyn GLES, state: &mut PresentState)
             float lifted = peak + (sqrt(peak) - peak) * uShadow * weight;\n\
             return rgb * (lifted / peak);\n\
         }\n\
+        vec3 blackFloorLift(vec3 current) {\n\
+            if (uBlackFloor <= 0.0) return current;\n\
+            float currentLuma = dot(current, vec3(0.2126, 0.7152, 0.0722));\n\
+            float amount = 1.0 - smoothstep(uBlackFloor, uBlackThreshold, currentLuma);\n\
+            float targetLuma = max(currentLuma, uBlackFloor);\n\
+            vec3 target = currentLuma > 0.001\n\
+                ? min(current * (targetLuma / currentLuma), vec3(1.0))\n\
+                : vec3(targetLuma);\n\
+            return mix(current, target, amount);\n\
+        }\n\
         void main() {\n\
             vec4 c = tap(vec2(0.0));\n\
-            if (uFsr < 0.5 && uSharpen <= 0.0001 && uAA < 0.5 && uShadow <= 0.0) {\n\
+            if (uFsr < 0.5 && uSharpen <= 0.0001 && uAA < 0.5 && uShadow <= 0.0 && uBlackFloor <= 0.0) {\n\
                 gl_FragColor = c;\n\
                 return;\n\
             }\n\
@@ -430,6 +475,7 @@ unsafe fn present_sharpen_program(gles: &mut dyn GLES, state: &mut PresentState)
             if (uAA > 0.5) {\n\
                 outRgb = fxaa(vUV);\n\
             }\n\
+            outRgb = blackFloorLift(outRgb);\n\
             gl_FragColor = vec4(shadowLift(outRgb), c.a);\n\
         }\0";
 
@@ -493,6 +539,8 @@ unsafe fn present_sharpen_program(gles: &mut dyn GLES, state: &mut PresentState)
         u_aa: gles.GetUniformLocation(program, b"uAA\0".as_ptr() as *const _),
         u_source_size: gles
             .GetUniformLocation(program, b"uSourceSize\0".as_ptr() as *const _),
+        u_black_floor: gles.GetUniformLocation(program, b"uBlackFloor\0".as_ptr() as *const _),
+        u_black_threshold: gles.GetUniformLocation(program, b"uBlackThreshold\0".as_ptr() as *const _),
     };
     state.program = Some(result);
     gles.DeleteShader(vs);
@@ -518,6 +566,7 @@ pub(crate) unsafe fn draw_present_sharpen_quad(
     fsr: f32,
     aa: f32,
     shadow: f32,
+    black_floor: Option<BlackFloorParams>,
 ) -> bool {
     let Some(p) = present_sharpen_program(gles, state) else {
         return false;
@@ -527,6 +576,7 @@ pub(crate) unsafe fn draw_present_sharpen_quad(
         || (amount > 0.0 && p.u_sharpen < 0)
         || (fsr > 0.0 && p.u_fsr < 0)
         || (shadow > 0.0 && p.u_shadow < 0)
+        || (black_floor.is_some() && (p.u_black_floor < 0 || p.u_black_threshold < 0))
     {
         // The linker threw away something we need (no driver should, but a
         // program that lost its uniforms would silently do nothing).
@@ -572,39 +622,38 @@ pub(crate) unsafe fn draw_present_sharpen_quad(
     if p.u_aa >= 0 {
         gles.Uniform1f(p.u_aa, aa);
     }
+    if p.u_black_floor >= 0 {
+        gles.Uniform1f(p.u_black_floor, black_floor.map_or(0.0, |value| value.floor));
+    }
+    if p.u_black_threshold >= 0 {
+        gles.Uniform1f(p.u_black_threshold, black_floor.map_or(1.0, |value| value.threshold));
+    }
 
-    let vertices: [f32; 12] = [
-        -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0,
+    let mut old_array=0;
+    gles.GetIntegerv(gles2::ARRAY_BUFFER_BINDING,&mut old_array);
+    let saved=[
+        super::present_attrib::SavedAttrib::capture(gles,p.a_pos as u32),
+        super::present_attrib::SavedAttrib::capture(gles,p.a_uv as u32),
     ];
-    let tex_coords: [f32; 12] = [
-        0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
-    ];
-    // Client-side arrays, exactly like the fixed-function quad: present_frame
-    // binds ARRAY_BUFFER 0 before it draws.
-    gles.BindBuffer(gles11::ARRAY_BUFFER, 0);
+    if state.quad_vbo == 0 {
+        let vertices:[f32;24]=[
+            -1.,-1.,0.,0., -1.,1.,0.,1., 1.,-1.,1.,0.,
+            1.,-1.,1.,0., -1.,1.,0.,1., 1.,1.,1.,1.,
+        ];
+        gles.GenBuffers(1,&mut state.quad_vbo);
+        gles.BindBuffer(gles2::ARRAY_BUFFER,state.quad_vbo);
+        gles.BufferData(gles2::ARRAY_BUFFER,std::mem::size_of_val(&vertices) as isize,
+            vertices.as_ptr().cast(),gles2::STATIC_DRAW);
+    } else { gles.BindBuffer(gles2::ARRAY_BUFFER,state.quad_vbo); }
     gles.EnableVertexAttribArray(p.a_pos as u32);
-    gles.VertexAttribPointer(
-        p.a_pos as u32,
-        2,
-        gles2::FLOAT,
-        gles2::FALSE,
-        0,
-        vertices.as_ptr() as *const _,
-    );
     gles.EnableVertexAttribArray(p.a_uv as u32);
-    gles.VertexAttribPointer(
-        p.a_uv as u32,
-        2,
-        gles2::FLOAT,
-        gles2::FALSE,
-        0,
-        tex_coords.as_ptr() as *const _,
-    );
-    gles.DrawArrays(gles2::TRIANGLES, 0, 6);
-    gles.DisableVertexAttribArray(p.a_pos as u32);
-    gles.DisableVertexAttribArray(p.a_uv as u32);
+    gles.VertexAttribPointer(p.a_pos as u32,2,gles2::FLOAT,gles2::FALSE,16,std::ptr::null());
+    gles.VertexAttribPointer(p.a_uv as u32,2,gles2::FLOAT,gles2::FALSE,16,8usize as *const _);
+    gles.DrawArrays(gles2::TRIANGLES,0,6);
+    for value in saved { value.restore(gles); }
+    gles.BindBuffer(gles2::ARRAY_BUFFER,old_array as u32);
     #[cfg(target_os = "android")]
-    let verified = verify_present_uniforms(gles, state, p, source_size, amount, fsr, aa, shadow);
+    let verified = verify_present_uniforms(gles, state, p, source_size, amount, fsr, aa, shadow, black_floor);
     #[cfg(not(target_os = "android"))]
     let verified = true;
     // The present paths on ES 1.1 intentionally don't save/restore the current
@@ -646,6 +695,7 @@ unsafe fn verify_present_uniforms(
     fsr: f32,
     aa: f32,
     shadow: f32,
+    black_floor: Option<BlackFloorParams>,
 ) -> bool {
     use super::present_effects::VerifyKey;
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -655,14 +705,18 @@ unsafe fn verify_present_uniforms(
     if !enabled || !gles.is_es2() { return true; }
     if state.uniform_verification_failed { return false; }
     let key = VerifyKey { program: p.program, source, sharpen: sharpen.to_bits(),
-        fsr: fsr.to_bits(), aa: aa.to_bits(), shadow: shadow.to_bits() };
+        fsr: fsr.to_bits(), aa: aa.to_bits(), shadow: shadow.to_bits(),
+        black_floor: black_floor.map_or(0, |value| value.floor.to_bits()),
+        black_threshold: black_floor.map_or(0, |value| value.threshold.to_bits()) };
     if !state.uniform_verification.admit(true, key) { return true; }
     let pending_error = gles.GetError();
     let mut current = 0;
     gles.GetIntegerv(gles2::CURRENT_PROGRAM, &mut current);
-    let locations = [p.u_aa, p.u_sharpen, p.u_fsr, p.u_shadow];
-    let requested = [aa, sharpen, fsr, shadow];
-    let mut actual = [f32::NAN; 4];
+    let locations = [p.u_aa, p.u_sharpen, p.u_fsr, p.u_shadow, p.u_black_floor, p.u_black_threshold];
+    let requested = [aa, sharpen, fsr, shadow,
+        black_floor.map_or(0.0, |value| value.floor),
+        black_floor.map_or(1.0, |value| value.threshold)];
+    let mut actual = [f32::NAN; 6];
     for (location, actual) in locations.into_iter().zip(actual.iter_mut()) {
         if location >= 0 { gles.GetUniformfv(p.program, location, actual); }
     }
@@ -670,8 +724,10 @@ unsafe fn verify_present_uniforms(
     let passed = current as u32 == p.program && pending_error == 0 && query_error == 0
         && actual.iter().zip(requested).all(|(actual, request)|
             actual.is_finite() && (*actual - request).abs() <= 0.000001);
-    log!("[DSpresent verify] program={} current={} source={}x{} aa_requested={} aa_read={} sharpen_requested={} sharpen_read={} fsr_requested={} fsr_read={} shadow_requested={} shadow_read={} pending_error=0x{:x} query_error=0x{:x} passed={}",
-        p.program,current,source.0,source.1,aa,actual[0],sharpen,actual[1],fsr,actual[2],shadow,actual[3],pending_error,query_error,passed);
+    log!("[DSpresent verify] program={} current={} source={}x{} aa_requested={} aa_read={} sharpen_requested={} sharpen_read={} fsr_requested={} fsr_read={} shadow_requested={} shadow_read={} black_floor_requested={} black_floor_read={} black_threshold_requested={} black_threshold_read={} pending_error=0x{:x} query_error=0x{:x} passed={}",
+        p.program,current,source.0,source.1,aa,actual[0],sharpen,actual[1],fsr,actual[2],shadow,actual[3],
+        black_floor.map_or(0.0, |value| value.floor),actual[4],
+        black_floor.map_or(1.0, |value| value.threshold),actual[5],pending_error,query_error,passed);
     state.uniform_verification_failed = !passed;
     passed
 }
@@ -818,15 +874,16 @@ pub(crate) unsafe fn draw_present_processed_quad(
     let fsr_mode = present_fsr_mode();
     let aa = present_aa_mode();
     let shadow = present_shadow_amount();
+    let black_floor = present_black_floor_params(present_black_floor_enabled());
     let plan = Plan::new(fsr_mode, amount, aa);
-    if !copy_when_idle && plan.passes()[0].kind == Kind::Copy && shadow == 0.0 {
+    if !copy_when_idle && plan.passes()[0].kind == Kind::Copy && shadow == 0.0 && black_floor.is_none() {
         return false;
     }
     let mut success;
     if plan.passes().len() == 1 {
         let pass = plan.passes()[0];
         success = draw_present_sharpen_quad(gles,state,tex_mat,source_size,
-            pass.sharpen,pass.fsr(),pass.aa(),shadow);
+            pass.sharpen,pass.fsr(),pass.aa(),shadow,black_floor);
     } else {
         let (old_fbo, old_texture) = known_bindings.unwrap_or_else(|| {
             let mut fbo = 0; let mut texture = 0;
@@ -857,7 +914,8 @@ pub(crate) unsafe fn draw_present_processed_quad(
             gles.BindTexture(gles11::TEXTURE_2D,input_texture);
             if !draw_present_sharpen_quad(gles,state,
                 if index == 0 { tex_mat } else { &identity },input_size,
-                pass.sharpen,pass.fsr(),pass.aa(),if final_pass { shadow } else { 0.0 })
+                pass.sharpen,pass.fsr(),pass.aa(),if final_pass { shadow } else { 0.0 },
+                if final_pass { black_floor } else { None })
             { success = false; break; }
             if let Some(target) = output {
                 input_texture = target.texture;
@@ -885,7 +943,7 @@ pub(crate) unsafe fn draw_present_processed_quad(
 /// dump this includes the present-layer image processing. Set
 /// `TOUCHHLE_DS_PRESENT_CAPTURE_AT` (default 600) chooses the frame number, or
 /// `TOUCHHLE_DS_PRESENT_CAPTURE_AFTER_MS` chooses a wall-clock delay instead.
-unsafe fn maybe_capture_present_backbuffer(
+pub(crate) unsafe fn maybe_capture_present_backbuffer(
     gles: &mut dyn GLES,
     viewport: (u32, u32, u32, u32),
 ) {
@@ -1163,4 +1221,14 @@ pub unsafe fn present_frame(
     }
     maybe_capture_present_backbuffer(gles, viewport);
     sharpened
+}
+
+/// Explicit audit only: separate incoming guest errors from host-present stages.
+pub(crate) unsafe fn verify_es2_boundary(gles:&mut dyn GLES,phase:&str) {
+    use std::sync::{OnceLock,atomic::{AtomicU32,Ordering}};
+    static ENABLED:OnceLock<bool>=OnceLock::new();
+    if !*ENABLED.get_or_init(||std::env::var("TOUCHHLE_DS_PRESENT_VERIFY").as_deref()==Ok("1")) {return;}
+    static COUNT:AtomicU32=AtomicU32::new(0);
+    let ordinal=COUNT.fetch_add(1,Ordering::Relaxed);
+    if ordinal<64 {let error=gles.GetError();log!("[DSpresent-boundary] n={} phase={} error=0x{:x}",ordinal,phase,error);}
 }

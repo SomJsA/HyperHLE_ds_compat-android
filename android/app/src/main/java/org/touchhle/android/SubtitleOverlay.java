@@ -37,6 +37,7 @@ final class SubtitleOverlay {
     private final TextPaint text = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final Paint panel = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final String[] captions;
+    private final String[] captionsEnglish;
     private final String[] ids;
     private final Typeface font;
     private boolean bridgeReady;
@@ -53,6 +54,7 @@ final class SubtitleOverlay {
     private final CaptionPresentation presentation=new CaptionPresentation();
 
     SubtitleOverlay(Context context, View owner, Typeface font) throws Exception {
+        OverlayTexts.load(context);
         this.context = context;
         this.owner = owner;
         this.font = font;
@@ -68,7 +70,12 @@ final class SubtitleOverlay {
         if (root.getInt("schema") != 1) { throw new IllegalArgumentException("Subtitle map schema"); }
         JSONArray entries = root.getJSONArray("entries");
         captions = new String[entries.length() + 1];
-        for (int i = 0; i < entries.length(); i++) { captions[i + 1] = entries.getJSONObject(i).getString("text"); }
+        captionsEnglish = new String[captions.length];
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject entry = entries.getJSONObject(i);
+            captions[i + 1] = entry.getString("text");
+            captionsEnglish[i + 1] = entry.optString("english", captions[i + 1]);
+        }
         ids = new String[captions.length];
         for (int i = 0; i < entries.length(); i++) { ids[i + 1] = entries.getJSONObject(i).getString("id"); }
         reload();
@@ -112,7 +119,10 @@ final class SubtitleOverlay {
         if (ready != bridgeReady) { nativeSetReady(ready); bridgeReady = ready; }
         long snapshot = ready ? nativeSnapshot() : 0;
         int index = (int)snapshot;
-        String value = preview ? PREVIEW : index > 0 && index < captions.length ? captions[index] : null;
+        boolean english=HdTextLanguage.isEnglish();
+        String value = preview ? LauncherLanguage.text(PREVIEW,"Subtitle preview: position, text size, colour and panel opacity.\nThe second line wraps to the available width.")
+                : index > 0 && index < captions.length
+                ? OverlayTexts.selected(ids[index]) : null;
         if (snapshot != lastSnapshot) {
             if (snapshot != 0) { android.util.Log.i("touchHLE", "[DSsubtitle-view] serial=" + (snapshot >>> 32) + " index=" + index); }
             lastSnapshot = snapshot;
@@ -122,7 +132,7 @@ final class SubtitleOverlay {
         OverlayStyle.Layer style=OverlayStyle.layer("subtitle",id);
         if(!OverlayStyle.external())style=new OverlayStyle.Layer(style.sources[0],style.sources[1],style.sources[2],localOverrides);
         String mode=prefs.contains("long_mode")?longMode:style.string("longTextMode","three");
-        String caption=preview?value:OverlayStyle.text(id,value,false);
+        String caption=preview?value:OverlayTexts.styled(id);
         presentation.draw(canvas,style,caption,font,left,top,cw,ch,context.getResources().getDisplayMetrics().scaledDensity,
                 mode,preview?(12_000L<<32):nativeTiming(snapshot),snapshot,preview);
     }
@@ -134,15 +144,15 @@ final class SubtitleOverlay {
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setPadding(24, 8, 24, 8);
         TextView note = new TextView(context);
-        note.setText("对白使用当前校订稿。设置实时预览并自动保存。长句可选大字分段或整段三行，按原对白片段时长显示。");
+        note.setText(LauncherLanguage.text("对白使用当前校订稿。设置实时预览并自动保存。长句可选大字分段或整段三行，按原对白片段时长显示。","Captions follow the selected game language. Changes preview live and save automatically. Long lines can use paged text or a three-line block, timed to the original dialogue."));
         controls.addView(note);
         CheckBox toggle = new CheckBox(context);
-        toggle.setText("启用高清字幕接管（关闭后恢复原字幕）"); toggle.setChecked(enabled);
+        toggle.setText(LauncherLanguage.text("启用高清字幕接管（关闭后恢复原字幕）","Enable HD captions (turn off to restore original captions)")); toggle.setChecked(enabled);
         toggle.setOnCheckedChangeListener((button, checked) -> { prefs.edit().putBoolean("enabled", checked).apply(); reload(); });
         controls.addView(toggle);
-        TextView modeLabel=new TextView(context);modeLabel.setText("长句显示方式");controls.addView(modeLabel);
+        TextView modeLabel=new TextView(context);modeLabel.setText(LauncherLanguage.text("长句显示方式","Long-line display"));controls.addView(modeLabel);
         android.widget.Spinner modePicker=new android.widget.Spinner(context);
-        android.widget.ArrayAdapter<String> modes=new android.widget.ArrayAdapter<>(context,android.R.layout.simple_spinner_item,new String[]{"大字分段","整段三行"});
+        android.widget.ArrayAdapter<String> modes=new android.widget.ArrayAdapter<>(context,android.R.layout.simple_spinner_item,new String[]{LauncherLanguage.text("大字分段","Paged large text"),LauncherLanguage.text("整段三行","Three-line block")});
         modes.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);modePicker.setAdapter(modes);modePicker.setSelection("three".equals(longMode)?1:0);
         modePicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
             public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id){
@@ -153,20 +163,20 @@ final class SubtitleOverlay {
         });controls.addView(modePicker);
         TextView sizeLabel=new TextView(context);controls.addView(sizeLabel);
         float reference=prefs.getFloat("size_reference",OverlayStyle.layer("subtitle","").number("fontSize",11.5f,3,36));
-        sizeLabel.setText(prefs.contains("size")?"保留原字号："+size+" sp；调整后使用 PC 参考字号":"字号（与 PC 共用参考值）："+reference);
+        sizeLabel.setText(prefs.contains("size")?LauncherLanguage.text("保留原字号：","Keeping original size: ")+size+LauncherLanguage.text(" sp；调整后使用 PC 参考字号"," sp; changes use the PC reference size"):LauncherLanguage.text("字号（与 PC 共用参考值）：","Text size (shared PC reference): ")+reference);
         SeekBar sizeSlider=new SeekBar(context);sizeSlider.setMax(66);sizeSlider.setProgress(Math.round((reference-3f)*2));
         sizeSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
             public void onProgressChanged(SeekBar bar,int progress,boolean user){if(!user)return;float value=3f+progress*.5f;
-                sizeLabel.setText("字号（与 PC 共用参考值）："+value);prefs.edit().remove("size").putFloat("size_reference",value).apply();reload();}
+                sizeLabel.setText(LauncherLanguage.text("字号（与 PC 共用参考值）：","Text size (shared PC reference): ")+value);prefs.edit().remove("size").putFloat("size_reference",value).apply();reload();}
             public void onStartTrackingTouch(SeekBar bar){}
             public void onStopTrackingTouch(SeekBar bar){}
         });controls.addView(sizeSlider);
-        slider(controls, "文字区域宽度", "width", 50, 96, width, "%");
-        slider(controls, "左右偏移", "x", -12, 12, x, "%");
-        slider(controls, "距画面底部", "bottom", 2, 30, bottom, "%");
-        slider(controls, "黑色底板不透明度", "opacity", 0, 100, opacity, "%");
+        slider(controls, LauncherLanguage.text("文字区域宽度","Caption width"), "width", 50, 96, width, "%");
+        slider(controls, LauncherLanguage.text("左右偏移","Horizontal offset"), "x", -12, 12, x, "%");
+        slider(controls, LauncherLanguage.text("距画面底部","Bottom margin"), "bottom", 2, 30, bottom, "%");
+        slider(controls, LauncherLanguage.text("黑色底板不透明度","Black panel opacity"), "opacity", 0, 100, opacity, "%");
         EditText hex = new EditText(context);
-        hex.setSingleLine(true); hex.setHint("文字颜色 #RRGGBB");
+        hex.setSingleLine(true); hex.setHint(LauncherLanguage.text("文字颜色 #RRGGBB","Text colour #RRGGBB"));
         hex.setText(String.format(java.util.Locale.ROOT, "#%06X", color & 0xffffff));
         hex.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -182,9 +192,9 @@ final class SubtitleOverlay {
         ScrollView scroll = new ScrollView(context); scroll.addView(controls);
         // Keep the lower screen visible so the actual game view shows the preview.
         Runnable finish = () -> { preview = false; owner.invalidate(); closed.run(); };
-        AlertDialog dialog = new AlertDialog.Builder(context).setTitle("字幕显示 · 实时预览")
-                .setView(scroll).setPositiveButton("完成", (d, w) -> finish.run())
-                .setNegativeButton("恢复默认", (d, w) -> { prefs.edit().clear().apply(); reload(); finish.run(); })
+        AlertDialog dialog = new AlertDialog.Builder(context).setTitle(LauncherLanguage.text("字幕显示 · 实时预览","Subtitle display \u00b7 live preview"))
+                .setView(scroll).setPositiveButton(LauncherLanguage.text("完成","Done"), (d, w) -> finish.run())
+                .setNegativeButton(LauncherLanguage.text("恢复默认","Restore defaults"), (d, w) -> { prefs.edit().clear().apply(); reload(); finish.run(); })
                 .setOnCancelListener(d -> finish.run()).create();
         dialog.setOnShowListener(d -> {
             scroll.scrollTo(0,0);
@@ -199,11 +209,11 @@ final class SubtitleOverlay {
     }
 
     private void slider(LinearLayout parent, String title, String key, int min, int max, int value, String unit) {
-        TextView label = new TextView(context); label.setText(title + "：" + value + unit); parent.addView(label);
+        TextView label = new TextView(context); label.setText(title + (LauncherLanguage.english()?": ":"：") + value + unit); parent.addView(label);
         SeekBar slider = new SeekBar(context); slider.setMax(max - min); slider.setProgress(value - min);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar bar, int progress, boolean user) {
-                int selected = min + progress; label.setText(title + "：" + selected + unit);
+                int selected = min + progress; label.setText(title + (LauncherLanguage.english()?": ":"：") + selected + unit);
                 prefs.edit().putInt(key, selected).apply(); reload();
             }
             public void onStartTrackingTouch(SeekBar bar) {}

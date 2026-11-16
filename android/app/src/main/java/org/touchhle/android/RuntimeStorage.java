@@ -9,6 +9,7 @@ import org.json.JSONObject;
 import java.io.*;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -111,7 +112,7 @@ final class RuntimeStorage {
             atomicWrite(marker,m.toString().getBytes(StandardCharsets.UTF_8));
             File note=child(root,"配置和存档说明.txt");
             if(note.createNewFile()) try(FileOutputStream out=new FileOutputStream(note)) {
-                out.write(("DeadSpace Legacy 资料布局 v1\n\n原生进度：touchHLE_sandbox/"+GAME+"\nAndroid配置：config/android\nPC配置：config/pc\n诊断：diagnostics\n\n三槽ZIP是双端交换原生存档和公共依赖的格式，平台启动器配置分别保存。未知布局拒绝写入；切换位置不会搬移、合并或覆盖已有进度。\nAndroid默认位置是应用专属Documents，可通过系统文件选择器的本应用入口访问。卸载前请导出存档；此目录并非公共Documents授权目录。\nsomjs宿主包与旧宿主包资料独立，旧进度请通过三槽ZIP导入。\n").getBytes(StandardCharsets.UTF_8));out.getFD().sync();
+                out.write(("死亡空间移动版（IOS端高清移植） 资料布局 v1\n\n原生进度：touchHLE_sandbox/"+GAME+"\nAndroid配置：config/android\nPC配置：config/pc\n诊断：diagnostics\n\n三槽ZIP是双端交换原生存档和公共依赖的格式，平台启动器配置分别保存。未知布局拒绝写入；切换位置不会搬移、合并或覆盖已有进度。\nAndroid默认位置是应用专属Documents，可通过系统文件选择器的本应用入口访问。卸载前请导出存档；此目录并非公共Documents授权目录。\nsomjs宿主包与旧宿主包资料独立，旧进度请通过三槽ZIP导入。\n").getBytes(StandardCharsets.UTF_8));out.getFD().sync();
             }
         }
     }
@@ -134,16 +135,17 @@ final class RuntimeStorage {
         return d;
     }
     private static boolean portablePreference(String key) {
-        return !MODE.equals(key) && !ROOT.equals(key) && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
+        return !MODE.equals(key) && !ROOT.equals(key) && !"ui_language".equals(key) && !HdTextLanguage.KEY.equals(key) && !LaunchReview.REVIEWED.equals(key)
+                && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
     }
     private static char preferenceType(String key) {
         if ("quality_preset".equals(key)||SaveNodeMonitor.KEY_SESSION.equals(key))return 's';
         for(String name:new String[]{"scale_hack","fps_cap","present_fsr","present_sharpen","shadow_boost"})if(name.equals(key))return 'i';
-        for(String name:new String[]{"show_fps","debug_logs","dump_frames","pc_compat","viewport_stretch","fast_present","skip_readback","gpu_present_copy","aa_mode","fsr3_ahb_probe","fsr3_frame_generation","fsr3_real_depth","fsr3_gpu_depth","fsr3_async","fsr3_direct_output","fsr3_force_unsupported","overlay_enabled",SaveNodeMonitor.KEY_ENABLED,SaveNodeMonitor.KEY_IMAGES})if(name.equals(key))return 'b';
+        for(String name:new String[]{"show_fps","debug_logs","dump_frames","pc_compat","viewport_stretch","fast_present","skip_readback","gpu_present_copy","aa_mode","fsr3_ahb_probe","fsr3_frame_generation","fsr3_real_depth","fsr3_gpu_depth","fsr3_async","fsr3_direct_output","fsr3_force_unsupported","overlay_enabled",LaunchReview.LIGHTING,SaveNodeMonitor.KEY_ENABLED,SaveNodeMonitor.KEY_IMAGES})if(name.equals(key))return 'b';
         return 0;
     }
     private static boolean integerInRange(String key,int value) {
-        if("scale_hack".equals(key))return value>=1&&value<=3;
+        if("scale_hack".equals(key))return value>=1&&value<=8;
         if("fps_cap".equals(key))return value>=0&&value<=1000;
         if("present_fsr".equals(key))return value>=0&&value<=2;
         if("present_sharpen".equals(key))return value>=0&&value<=20;
@@ -167,6 +169,10 @@ final class RuntimeStorage {
         File root=requireCompatible(c);JSONObject d=readConfiguration(root);
         if(d==null)d=new JSONObject();JSONObject values=d.optJSONObject("values");if(values==null)values=new JSONObject();
         try {
+            // UI language belongs to this app, independent of a selected save
+            // location. An old exported graphics config must not override it.
+            values.remove("ui_language");
+            values.remove(HdTextLanguage.KEY);
             for(Map.Entry<String,?> entry:prefs(c).getAll().entrySet())
                 if(portablePreference(entry.getKey()) && (entry.getValue() instanceof Boolean || entry.getValue() instanceof Number || entry.getValue() instanceof String))values.put(entry.getKey(),entry.getValue());
             d.put("schema",1).put("game",GAME).put("values",values);
@@ -174,6 +180,72 @@ final class RuntimeStorage {
         File file=configurationFile(root);if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new IOException("无法保存Android配置。");
         atomicWrite(file,d.toString().getBytes(StandardCharsets.UTF_8));
     }
+
+    /** Keep the native game's persisted menu language in sync with the launcher choice. */
+    static synchronized void syncNativeLanguage(File base, String language) throws IOException {
+        File settings = new File(SaveArchiveCore.documents(base), "var/settings.sb");
+        if (!settings.isFile()) return;
+        byte[] original = readBinary(settings, 4 * 1024 * 1024);
+        if(!Arrays.asList("CHS_CN","ENG_US","FRE_FR","GER_DE","ITA_IT","KOR_KR","SPA_ES").contains(language))
+            throw new IOException("Unsupported native language; settings preserved.");
+        byte[] to=language.getBytes(StandardCharsets.US_ASCII);
+        int at=-1,count=0;
+        for(String known:new String[]{"CHS_CN","ENG_US","FRE_FR","GER_DE","ITA_IT","JPN_JP","KOR_KR","SPA_ES"}) {
+            byte[] from=known.getBytes(StandardCharsets.US_ASCII);
+            for(int i=0;i<=original.length-from.length;i++) {
+                boolean match=true;for(int k=0;k<from.length;k++)if(original[i+k]!=from[k]){match=false;break;}
+                if(match){at=i;count++;}
+            }
+        }
+        if(count==1 && new String(original,at,to.length,StandardCharsets.US_ASCII).equals(language))return;
+        if (count != 1) throw new IOException("settings.sb 原生语言字段数量异常，已保留原文件。");
+        byte[] edited = original.clone();
+        System.arraycopy(to, 0, edited, at, to.length);
+        updateSectionHash(edited, "STRS");
+        if (Arrays.equals(original, edited)) return;
+        SaveArchiveCore.backupDocuments(base);
+        atomicWrite(settings, edited);
+        if (!Arrays.equals(edited, readBinary(settings, 4 * 1024 * 1024)))
+            throw new IOException("settings.sb 语言写入校验失败，已保留备份。");
+    }
+
+    private static byte[] readBinary(File file, int limit) throws IOException {
+        if (file.length() > limit) throw new IOException("settings.sb 过大，已保留原文件。");
+        try (InputStream in = new FileInputStream(file); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] block = new byte[8192]; int count;
+            while ((count = in.read(block)) != -1) out.write(block, 0, count);
+            return out.toByteArray();
+        }
+    }
+
+    private static void updateSectionHash(byte[] bytes, String wanted) throws IOException {
+        if (bytes.length < 20 || bytes[0] != 'S' || bytes[1] != 'B' || bytes[2] != 'I' || bytes[3] != 'N')
+            throw new IOException("settings.sb 不是 SBIN 文件，已保留原文件。");
+        int cursor = 8; boolean found = false;
+        while (cursor + 12 <= bytes.length) {
+            String tag = new String(bytes, cursor, 4, StandardCharsets.US_ASCII);
+            int length = readU32(bytes, cursor + 4);
+            if (length < 0 || cursor + 12L + length > bytes.length) throw new IOException("settings.sb 区段越界，已保留原文件。");
+            if (wanted.equals(tag)) { writeU32(bytes, cursor + 8, fnv(bytes, cursor + 12, length)); found = true; }
+            cursor = (cursor + 12 + length + 3) & ~3;
+        }
+        if (!found || cursor != bytes.length) throw new IOException("settings.sb 字符串区段异常，已保留原文件。");
+    }
+
+    private static int readU32(byte[] bytes, int at) {
+        return (bytes[at] & 255) | ((bytes[at + 1] & 255) << 8) | ((bytes[at + 2] & 255) << 16) | ((bytes[at + 3] & 255) << 24);
+    }
+
+    private static void writeU32(byte[] bytes, int at, long value) {
+        bytes[at] = (byte)value; bytes[at + 1] = (byte)(value >> 8); bytes[at + 2] = (byte)(value >> 16); bytes[at + 3] = (byte)(value >> 24);
+    }
+
+    private static long fnv(byte[] bytes, int start, int length) {
+        long hash = 2166136261L;
+        for (int i = start; i < start + length; i++) hash = ((hash * 16777619L) ^ (bytes[i] & 255)) & 0xffffffffL;
+        return hash;
+    }
+
     private static void atomicWrite(File file,byte[] bytes) throws IOException {
         AtomicFile atomic=new AtomicFile(file);FileOutputStream out=null;
         try{out=atomic.startWrite();out.write(bytes);atomic.finishWrite(out);}

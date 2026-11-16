@@ -386,7 +386,10 @@ impl Environment {
         // Default model picked for each class when the user hasn't chosen one.
         // iPhone 3GS (iPhone2,1) is the historical touchHLE phone default
         // (320x480, GLES2-capable); iPad 2 (iPad2,1) is the tablet default.
-        let default_phone = DeviceFamily::iPhone3GS;
+        let default_phone = if launched_bundle_id == "com.ea.deadspace.bv"
+            && std::env::var("TOUCHHLE_DS_NATIVE_EFFECTS").as_deref() != Ok("0") {
+            DeviceFamily::iPhone4s
+        } else { DeviceFamily::iPhone3GS };
         let default_ipad = DeviceFamily::iPad2;
 
         let device_family = if let Some(dfo) = device_family_override {
@@ -423,6 +426,15 @@ impl Environment {
             default_phone
         };
         log!("{:?} device family is chosen.", device_family);
+        if launched_bundle_id=="com.ea.deadspace.bv" {
+            if std::env::var_os("TOUCHHLE_DS_ES2_FOG_FIX").is_none() {
+                unsafe { std::env::set_var("TOUCHHLE_DS_ES2_FOG_FIX", "1"); }
+            }
+            let machine=device_family.machine_name();
+            let high=machine.starts_with("iPhone4,") || machine.starts_with("iPhone5,");
+            log!("[DSnative-effects] selected_model={} native_high_tier={}",machine,high);
+        }
+
         options.device_family = Some(device_family);
 
         let window = if options.headless {
@@ -1505,6 +1517,8 @@ impl Environment {
     pub fn run(mut self) {
         crate::ds_font_roles::prime(&mut self);
         crate::ds_game_clock::prime(&mut self);
+        crate::ds_shader_opening_fog::prime(&mut self);
+        crate::ds_shader_projection::prime(&mut self);
         #[cfg(target_os = "android")]
         crate::ds_skin_math::prime(&mut self);
         #[cfg(target_os = "android")]
@@ -1763,6 +1777,7 @@ impl Environment {
                 || crate::ds_native_math_profile::handle_breakpoint(self)
                 || crate::ds_skin_math::handle_breakpoint(self)
                 || crate::ds_game_clock::handle_breakpoint(self)
+                || crate::ds_shader_projection::handle_breakpoint(self)
                 || crate::ds_chapter_overlay::handle_breakpoint(self))
         {
             return;

@@ -79,6 +79,49 @@ pub const CAPABILITIES: &[GLenum] = &[
     gl21::POINT_SPRITE,
 ];
 
+#[inline(always)]
+fn capability_supported(cap: GLenum) -> bool {
+    matches!(
+        cap,
+        gl21::ALPHA_TEST
+            | gl21::BLEND
+            | gl21::COLOR_LOGIC_OP
+            | gl21::CLIP_PLANE0
+            | gl21::CLIP_PLANE1
+            | gl21::CLIP_PLANE2
+            | gl21::CLIP_PLANE3
+            | gl21::CLIP_PLANE4
+            | gl21::CLIP_PLANE5
+            | gl21::LIGHT0
+            | gl21::LIGHT1
+            | gl21::LIGHT2
+            | gl21::LIGHT3
+            | gl21::LIGHT4
+            | gl21::LIGHT5
+            | gl21::LIGHT6
+            | gl21::LIGHT7
+            | gl21::COLOR_MATERIAL
+            | gl21::CULL_FACE
+            | gl21::DEPTH_TEST
+            | gl21::DITHER
+            | gl21::FOG
+            | gl21::LIGHTING
+            | gl21::LINE_SMOOTH
+            | gl21::MULTISAMPLE
+            | gl21::NORMALIZE
+            | gl21::POINT_SMOOTH
+            | gl21::POLYGON_OFFSET_FILL
+            | gl21::RESCALE_NORMAL
+            | gl21::SAMPLE_ALPHA_TO_COVERAGE
+            | gl21::SAMPLE_ALPHA_TO_ONE
+            | gl21::SAMPLE_COVERAGE
+            | gl21::SCISSOR_TEST
+            | gl21::STENCIL_TEST
+            | gl21::TEXTURE_2D
+            | gl21::POINT_SPRITE
+    )
+}
+
 pub const UNSUPPORTED_CAPABILITIES: &[GLenum] = &[
     0x8620, // GL_VERTEX_PROGRAM_NV
     gl21::TEXTURE,
@@ -6049,7 +6092,7 @@ impl GLES for GLES1OnGL2<'_> {
             // Don't forward shading-model / hint enums to gl21::Enable —
             // they're not valid capabilities and would set GL_INVALID_ENUM.
             return;
-        } else if !CAPABILITIES.contains(&cap) {
+        } else if !capability_supported(cap) {
             // Per the GLES 1.1 spec, invalid caps set GL_INVALID_ENUM but
             // must not crash. Apple's driver silently ignores unknown caps,
             // and at least Farm Frenzy passes GL_FLAT (0x1D00) here.
@@ -6083,7 +6126,7 @@ impl GLES for GLES1OnGL2<'_> {
                 gl21::FALSE
             };
         }
-        if !(CAPABILITIES.contains(&cap)
+        if !(capability_supported(cap)
             || ARRAYS.iter().any(|&ArrayInfo { name, .. }| name == cap))
         {
             log!(
@@ -6099,7 +6142,7 @@ impl GLES for GLES1OnGL2<'_> {
             // See Enable: emulated, never forwarded to the desktop driver.
             self.state.matrix_palette_enabled = false;
             return;
-        } else if CAPABILITIES.contains(&cap) {
+        } else if capability_supported(cap) {
             log_dbg!("glDisable{:#x}", cap);
         } else if ARRAYS.iter().any(|&ArrayInfo { name, .. }| name == cap) {
             log_dbg!("Tolerating glDisable({:#x}) of client state", cap);
@@ -6128,7 +6171,7 @@ impl GLES for GLES1OnGL2<'_> {
             self.state.palette_weight_state.enabled = true;
             return;
         }
-        if CAPABILITIES.contains(&array) {
+        if capability_supported(array) {
             log_dbg!(
                 "Tolerating glEnableClientState({:#x}) of a capability",
                 array
@@ -6147,7 +6190,7 @@ impl GLES for GLES1OnGL2<'_> {
             self.state.palette_weight_state.enabled = false;
             return;
         }
-        if CAPABILITIES.contains(&array) {
+        if capability_supported(array) {
             log_dbg!(
                 "Tolerating glDisableClientState({:#x}) of a capability",
                 array
@@ -9266,5 +9309,19 @@ mod matrix_palette_tests {
             blended[c] = 0.5 * ta[c] + 0.5 * tb[c];
         }
         assert_eq!(blended, [5.0, 0.0, 0.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::{capability_supported, CAPABILITIES};
+
+    #[test]
+    fn fast_capability_dispatch_matches_declared_table() {
+        for &cap in CAPABILITIES {
+            assert!(capability_supported(cap), "missing capability {cap:#x}");
+        }
+        assert!(!capability_supported(0));
+        assert!(!capability_supported(0xffff_ffff));
     }
 }

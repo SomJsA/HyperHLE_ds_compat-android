@@ -11,6 +11,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Android storage/filesystem adapter around the pure-Java save importer. */
@@ -43,8 +45,44 @@ final class SaveArchiveImporter {
         return stopped(context, base -> SaveScalarEditor.read(base, slot));
     }
 
+    static SaveEditorSnapshot readEditor(Context context, int slot) throws IOException {
+        return stopped(context, base -> SaveEditorSnapshot.read(base, slot));
+    }
+
+    static LinkedHashMap<String,String> readFields(Context context, int slot) throws IOException {
+        return stopped(context, base -> {
+            java.util.List<File> files = new java.util.ArrayList<>();
+            File docs = SaveArchiveCore.documents(base);
+            for (String suffix : new String[]{"CheckpointSave", "LevelSave"}) {
+                File file = new File(docs, String.format(java.util.Locale.US, "var/%02d_%s.sb", slot, suffix));
+                if (file.isFile()) files.add(file);
+            }
+            if (files.isEmpty()) throw new IOException("This story slot has no saved progress");
+            return SaveScalarEditor.readFields(files.get(0));
+        });
+    }
+
+    static File editFields(Context context, int slot, Map<String,String> changes) throws IOException {
+        return stopped(context, base -> SaveScalarEditor.saveFields(base, slot, changes));
+    }
+
     static File editSlot(Context context, int slot, long credits, long nodes, int rig, int changedFields) throws IOException {
         return stopped(context, base -> SaveScalarEditor.save(base, slot, credits, nodes, rig, changedFields));
+    }
+
+    static File editSlot(Context context, int slot, long credits, long nodes, int rig,
+                         boolean burstAvailable, long burstClip, long burstAlt,
+                         int changedFields) throws IOException {
+        return stopped(context, base -> SaveScalarEditor.save(base, slot, credits, nodes, rig,
+                burstAvailable, burstClip, burstAlt, changedFields));
+    }
+
+    static SaveSettingsEditor.Snapshot readSettings(Context context) throws IOException {
+        return stopped(context, SaveSettingsEditor::read);
+    }
+
+    static File editSettings(Context context, boolean attack, boolean defense, boolean loot) throws IOException {
+        return stopped(context, base -> SaveSettingsEditor.save(base, attack, defense, loot));
     }
 
     static File[] backups(Context context) throws IOException {

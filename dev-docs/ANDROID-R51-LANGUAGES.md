@@ -1,0 +1,13 @@
+# Android R5.1 language contract
+
+Local candidate only; no publication is authorized. Evidence: `E:/CodexProjects/DeadSpaceLegacy/report/android-r51-multilingual-20261117`.
+
+The launcher UI has Chinese and English. Game text is independently selected from Chinese (the accepted Tieba bank), English, French, German, Italian, Korean and Spanish. The original Japanese table contains 706 null value references and no translated text; the Japanese option explicitly falls back to English in both native menus and HD layers. Do not present that fallback as Japanese visual acceptance.
+
+`HdTextLanguage` supplies the native SBIN locale, preferred language tags and Canvas selection from one code table. The launch intent carries both text and UI languages to the separate `:game` process. The game process keeps this snapshot in memory and does not write a stale preference cache over the launcher. Its pause surfaces use Chinese only when both choices are Chinese; every other combination uses English. This includes contributor text, return/exit confirmation, subtitle controls and optional save marking. Returning to the launcher retains its own UI selection.
+
+Original non-Chinese strings are exported by `tools/translation/Export-AndroidLanguages.py` into `android/app/src/main/assets/overlay/native-languages.json`. Prepared-asset builds must include the exact same file. Export checks key sets, reference bounds and the known empty Japanese resource, and records member hashes. SBIN reference zero means null; it must never index the last STRS entry. Empty non-Chinese values fall back to the corresponding English key. The IPA is opened read-only and never repackaged.
+
+`RuntimeStorage.syncNativeLanguage` changes only the existing six-byte native locale field, validates the SBIN section, backs up Documents before writing and verifies readback. Missing settings on a new profile are left for native initialization. Invalid or ambiguous fields are refused. Language choices remain excluded from portable graphics configuration.
+
+Device acceptance uses the isolated `org.touchhle.android.somjs.r51lang` package and a new story sandbox for every selectable language in both DATA and HD. No chapter seed is used. Each pass requires the actual native difficulty screen and at least two opening captions linked to native subtitle events, plus a process-alive sample. Pause and setting controls are checked against their selected language. This narrow acceptance does not certify full chapters, dialogue synchronization, audio, long-run performance or the complete R15 gates.

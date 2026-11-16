@@ -103,7 +103,11 @@ final class OverlayStyle {
     }
     static void drawObjective(Canvas canvas, Layer style, String text, Typeface font, Typeface titleFont,
             float left, float top, float cw, float ch) {
-        draw(canvas, style, text, null, style.string("label", "目标："), font, titleFont, left, top, cw, ch, 1f);
+        drawObjective(canvas, style, text, style.string("label", "目标："), font, titleFont, left, top, cw, ch);
+    }
+    static void drawObjective(Canvas canvas, Layer style, String text, String label,
+            Typeface font, Typeface titleFont, float left, float top, float cw, float ch) {
+        draw(canvas, style, text, null, label, font, titleFont, left, top, cw, ch, 1f);
     }
     private static void draw(Canvas canvas, Layer style, String first, String second, String label, Typeface font, Typeface headingFont,
             float left, float top, float cw, float ch, float opacity) {

@@ -15,6 +15,8 @@
 use crate::gles::present::present_frame;
 #[path = "ds_key_bindings.rs"]
 mod ds_key_bindings;
+#[path = "ds_tilt_pulse.rs"]
+mod ds_tilt_pulse;
 #[path = "ds_frame_journal.rs"]
 mod ds_frame_journal;
 
@@ -1127,6 +1129,7 @@ pub struct Window {
     /// and the camera still advanced through the door, mean|diff| 57 over 10 s).
     mouse_touch_down: Option<(f32, f32)>,
     virtual_accelerometer_last: Option<(f32, f32, bool)>,
+    ds_tilt_pulse: ds_tilt_pulse::TiltPulse,
     /// PC-style mouse aiming: true while the right button is held and
     /// TOUCHHLE_DS_AIM_XY is configured.
     ds_aim_active: bool,
@@ -1492,6 +1495,7 @@ impl Window {
             virtual_cursor_last_unsticky: None,
             mouse_touch_down: None,
             virtual_accelerometer_last: None,
+            ds_tilt_pulse: ds_tilt_pulse::TiltPulse::default(),
             ds_aim_active: false,
             ds_shake_start: None,
             ds_shake_variant: 0,
@@ -3720,6 +3724,9 @@ impl Window {
                 // SDL2 reports acceleration in units of m/s^2.
                 let gravity: f32 = 9.80665; // SDL_STANDARD_GRAVITY
                 let (x, y, z) = (x / gravity, y / gravity, z / gravity);
+                if cfg!(target_os = "android") {
+                    return self.ds_tilt_pulse.apply((x, y, z), Instant::now());
+                }
                 return (x, y, z);
             }
         }

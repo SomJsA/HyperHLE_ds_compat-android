@@ -70,6 +70,8 @@ pub struct VerifyKey {
     pub fsr: u32,
     pub aa: u32,
     pub shadow: u32,
+    pub black_floor: u32,
+    pub black_threshold: u32,
 }
 
 /// Owned by one PresentState. Disabled mode reserves no entry; diagnostic
@@ -132,7 +134,7 @@ mod tests {
         }
         assert_eq!(Plan::new(0,3.0,false).passes()[0].sharpen,2.0);
     }
-    fn key(program:u32)->VerifyKey { VerifyKey { program,source:(1440,960),sharpen:0.5f32.to_bits(),fsr:0,aa:1f32.to_bits(),shadow:0 } }
+    fn key(program:u32)->VerifyKey { VerifyKey { program,source:(1440,960),sharpen:0.5f32.to_bits(),fsr:0,aa:1f32.to_bits(),shadow:0,black_floor:0,black_threshold:0 } }
     #[test]
     fn verification_is_disabled_and_owned_per_context() {
         let mut a=VerifyBudget::default();let mut b=VerifyBudget::default();

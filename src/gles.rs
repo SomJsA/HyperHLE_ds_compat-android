@@ -70,12 +70,15 @@ pub mod ds_ahb_bridge;
 pub mod gles1_native;
 pub mod gles1_on_gl2;
 pub mod gles2_glsl;
+pub(crate) mod ds_native_fog;
+pub(crate) mod ds_fog_scope;
 pub mod gles2_native;
 pub mod gles2_on_gl3;
 pub mod gles3_native;
 pub mod gles3_on_gl3;
 mod gles_generic;
 pub mod present;
+pub(crate) mod present_attrib;
 mod present_effects;
 pub(crate) mod ds_color_probe;
 pub(crate) mod util;
@@ -326,3 +329,5 @@ pub(crate) mod ds_window_handoff;
 
 #[cfg(target_os = "android")]
 pub(crate) mod ds_render_actor;
+
+pub(crate) mod ds_opening_fog;

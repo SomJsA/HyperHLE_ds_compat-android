@@ -5,6 +5,9 @@
  */
 //! EAGL.
 
+#[path="eagl_fog_probe.rs"]
+mod fog_probe;
+
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::core_animation::ca_eagl_layer::{
     find_fullscreen_eagl_layer, get_pixels_vec_for_presenting, present_pixels,
@@ -96,6 +99,7 @@ fn effective_eagl_api(requested: EAGLRenderingAPI, prefer_gles2_context: bool) -
 
 #[derive(Default)]
 pub(super) struct EAGLContextHostObject {
+    pub(super) shader_compat: Rc<RefCell<crate::gles::ds_fog_scope::GuestState>>,
     pub(super) gles_ctx: Option<Box<dyn GLESContext>>,
     present_state: Rc<RefCell<crate::gles::present::PresentState>>,
     transfer_state: Rc<RefCell<TransferState>>,
@@ -138,6 +142,27 @@ pub(super) struct EAGLContextHostObject {
 }
 impl HostObject for EAGLContextHostObject {}
 
+/// Resolve exactly the same effective owner as GL dispatch (including main-thread fallback).
+pub(super) fn shader_compat_state(env:&mut Environment)->Option<Rc<RefCell<crate::gles::ds_fog_scope::GuestState>>> {
+    let context=env.framework_state.opengles.effective_ctx_id(env.current_thread)?;
+    let object=env.objc.borrow::<EAGLContextHostObject>(context);
+    object.shader_compat.borrow().enabled().then(||object.shader_compat.clone())
+}
+pub(crate) fn shader_opening_fog_range(env:&mut Environment,renderer:u32,frame:u64,start:f32,end:f32)->Option<(f32,f32)> {
+    let context=env.framework_state.opengles.effective_ctx_id(env.current_thread)?;
+    let object=env.objc.borrow::<EAGLContextHostObject>(context);
+    if object.api!=2 {return None;}
+    let state=object.shader_compat.clone();
+    let result=state.borrow_mut().opening_range(renderer,frame,start,end); result
+}
+pub(super) fn shader_no_fog_key(env:&mut Environment)->Option<u32> {
+    let context=env.framework_state.opengles.effective_ctx_id(env.current_thread)?;
+    let object=env.objc.borrow::<EAGLContextHostObject>(context);
+    if object.api<2 {return None;}
+    let result=object.shader_compat.borrow().selected_key();result
+}
+
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
@@ -146,6 +171,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)alloc {
     let host_object = Box::new(EAGLContextHostObject {
+        shader_compat: Default::default(),
         gles_ctx: None,
         present_state: Default::default(),
         transfer_state: Default::default(),
@@ -204,6 +230,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         return msg![env; this initWithAPI:api];
     }
 
+    let shared_shader_namespace=env.objc.borrow::<EAGLContextHostObject>(group).shader_compat.borrow().namespace.clone();
     let window = env.window.as_mut().expect("OpenGL ES is not supported in headless mode");
     let prev_context = env.objc.borrow_mut::<EAGLContextHostObject>(group).gles_ctx.as_mut().unwrap();
 
@@ -232,9 +259,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     env.objc.borrow_mut::<EAGLContextHostObject>(this).gles_ctx = Some(gles_ins);
     env.objc.borrow_mut::<EAGLContextHostObject>(this).api = effective_api;
+    *env.objc.borrow_mut::<EAGLContextHostObject>(this).shader_compat.borrow_mut()=Default::default();
 
     env.window.as_mut().unwrap().set_share_with_current_context(false);
 
+    env.objc.borrow_mut::<EAGLContextHostObject>(this).shader_compat.borrow_mut().namespace=shared_shader_namespace;
     env.objc.borrow_mut::<EAGLContextHostObject>(this).renderbuffer_drawable_bindings = env.objc.borrow::<EAGLContextHostObject>(group).renderbuffer_drawable_bindings.clone();
     this
 }
@@ -267,6 +296,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     env.objc.borrow_mut::<EAGLContextHostObject>(this).gles_ctx = Some(gles_ins);
     env.objc.borrow_mut::<EAGLContextHostObject>(this).api = effective_api;
+    *env.objc.borrow_mut::<EAGLContextHostObject>(this).shader_compat.borrow_mut()=Default::default();
 
     this
 }
@@ -1536,12 +1566,19 @@ unsafe fn read_renderbuffer(
 unsafe fn present_renderbuffer_es2(
     gles: &mut dyn GLES,
     state: &mut TransferState,
+    present_state: &mut crate::gles::present::PresentState,
+    renderbuffer: GLuint,
     viewport: (u32, u32, u32, u32),
     rotation_matrix: crate::matrix::Matrix<2>,
     virtual_cursor_visible_at: Option<(f32, f32, bool)>,
 ) {
     use crate::gles::gles2_raw as gles2;
 
+    crate::gles::present::verify_es2_boundary(gles,"entry");
+    // Guest error flags were already consumed at the end of this host pass.
+    // Separate incoming errors before attributing uploads/uniform checks.
+    while gles.GetError()!=0 {}
+    state.fog_probe.tick(gles);
     // Save state we are about to clobber
     let mut old_program: GLint = 0;
     gles.GetIntegerv(gles2::CURRENT_PROGRAM, &mut old_program);
@@ -1551,6 +1588,7 @@ unsafe fn present_renderbuffer_es2(
     gles.GetIntegerv(gles2::ELEMENT_ARRAY_BUFFER_BINDING, &mut old_elem_buffer);
     let mut old_active_texture: GLint = 0;
     gles.GetIntegerv(gles2::ACTIVE_TEXTURE, &mut old_active_texture);
+    gles.ActiveTexture(gles2::TEXTURE0);
     let mut old_texture: GLint = 0;
     gles.GetIntegerv(gles2::TEXTURE_BINDING_2D, &mut old_texture);
     let mut old_framebuffer: GLint = 0;
@@ -1563,11 +1601,16 @@ unsafe fn present_renderbuffer_es2(
     let cull_was_on = gles.IsEnabled(gles2::CULL_FACE) != 0;
     let blend_was_on = gles.IsEnabled(gles2::BLEND) != 0;
     let scissor_was_on = gles.IsEnabled(gles2::SCISSOR_TEST) != 0;
+    let stencil_was_on = gles.IsEnabled(gles2::STENCIL_TEST) != 0;
+    let mut old_color_mask=[0u8;4];
+    gles.GetBooleanv(gles2::COLOR_WRITEMASK,old_color_mask.as_mut_ptr());
+    let mut old_renderbuffer=0;
+    gles.GetIntegerv(gles2::RENDERBUFFER_BINDING,&mut old_renderbuffer);
+    gles.BindRenderbuffer(gles2::RENDERBUFFER,renderbuffer);
 
+    crate::gles::present::verify_es2_boundary(gles,"state-saved");
     // Resolve renderbuffer → texture with a cached FBO + the ES 2.0 entry
     // points.
-    let mut renderbuffer: GLint = 0;
-    gles.GetIntegerv(gles2::RENDERBUFFER_BINDING, &mut renderbuffer);
     let (width, height) = {
         let mut w: GLint = 0;
         let mut h: GLint = 0;
@@ -1622,6 +1665,7 @@ unsafe fn present_renderbuffer_es2(
     gles.BindBuffer(gles2::ARRAY_BUFFER, present_objects.quad_vbo);
     gles.BindFramebuffer(gles2::FRAMEBUFFER, 0);
 
+    crate::gles::present::verify_es2_boundary(gles,"source-copied");
     // Configure the destination viewport (the window) and clear.
     gles.Viewport(
         viewport.0 as _,
@@ -1634,7 +1678,9 @@ unsafe fn present_renderbuffer_es2(
     gles.Disable(gles2::CULL_FACE);
     gles.Disable(gles2::BLEND);
     gles.Disable(gles2::SCISSOR_TEST);
-    gles.Clear(gles2::COLOR_BUFFER_BIT | gles2::DEPTH_BUFFER_BIT | gles2::STENCIL_BUFFER_BIT);
+    gles.Disable(gles2::STENCIL_TEST);
+    gles.ColorMask(1,1,1,1);
+    gles.Clear(gles2::COLOR_BUFFER_BIT);
 
     // Compile the present shader program once and cache it. If the shader
     // fails to compile/link (e.g. on a host with a buggy GLSL ES driver),
@@ -1676,22 +1722,23 @@ unsafe fn present_renderbuffer_es2(
         if scissor_was_on {
             gles.Enable(gles2::SCISSOR_TEST);
         }
+        gles.BindRenderbuffer(gles2::RENDERBUFFER,old_renderbuffer as u32);
+        gles.ColorMask(old_color_mask[0],old_color_mask[1],old_color_mask[2],old_color_mask[3]);
+        if stencil_was_on { gles.Enable(gles2::STENCIL_TEST); }
         return;
     };
 
     // The presenter only changes the two attributes it owns. Querying all 16
     // slots on every frame is unnecessary driver traffic.
-    let attribute_slots = [program.a_pos as GLuint, program.a_uv as GLuint];
-    let mut attrib_was_enabled = [0u8; 2];
-    for (slot, &attribute) in attrib_was_enabled.iter_mut().zip(attribute_slots.iter()) {
-        let mut v: GLint = 0;
-        gles.GetVertexAttribiv(attribute, gles2::VERTEX_ATTRIB_ARRAY_ENABLED, &mut v);
-        *slot = v as u8;
-    }
-
+    let saved_attributes=[
+        crate::gles::present_attrib::SavedAttrib::capture(gles,program.a_pos as u32),
+        crate::gles::present_attrib::SavedAttrib::capture(gles,program.a_uv as u32),
+    ];
     gles.UseProgram(program.program);
     gles.Uniform1i(program.u_tex, 0);
-    let m = crate::matrix::Matrix::<4>::from(&rotation_matrix);
+    let r = crate::matrix::Matrix::<4>::from(&rotation_matrix);
+    let m = crate::matrix::Matrix::<4>::translate_3d(-0.5,-0.5,0.0)
+        .multiply(&r).multiply(&crate::matrix::Matrix::<4>::translate_3d(0.5,0.5,0.0));
     let cols = m.columns();
     gles.UniformMatrix4fv(
         program.u_tex_mat,
@@ -1724,7 +1771,13 @@ unsafe fn present_renderbuffer_es2(
         16,
         8usize as *const _,
     );
-    gles.DrawArrays(gles2::TRIANGLES, 0, 6);
+    crate::gles::present::verify_es2_boundary(gles,"before-quality");
+    let source_size=(width.max(0) as u32,height.max(0) as u32);
+    let processed=crate::gles::present::draw_present_processed_quad(
+        gles,present_state,&m,source_size,viewport,Some((0,present_objects.texture)),false);
+    if !processed { gles.DrawArrays(gles2::TRIANGLES,0,6); }
+    crate::gles::present::maybe_capture_present_backbuffer(gles,viewport);
+
 
     // Optional: virtual cursor.
     if let Some((cx, cy, pressed)) = virtual_cursor_visible_at {
@@ -1747,14 +1800,7 @@ unsafe fn present_renderbuffer_es2(
         let _ = pressed;
     }
 
-    // Restore vertex attribute enabled state so the app's next draw works.
-    for (&attribute, &was) in attribute_slots.iter().zip(attrib_was_enabled.iter()) {
-        if was != 0 {
-            gles.EnableVertexAttribArray(attribute);
-        } else {
-            gles.DisableVertexAttribArray(attribute);
-        }
-    }
+    for value in saved_attributes { value.restore(gles); }
 
     // Restore state we touched
     gles.UseProgram(if old_program > 0 {
@@ -1791,6 +1837,10 @@ unsafe fn present_renderbuffer_es2(
     if scissor_was_on {
         gles.Enable(gles2::SCISSOR_TEST);
     }
+
+    gles.BindRenderbuffer(gles2::RENDERBUFFER,old_renderbuffer as u32);
+    gles.ColorMask(old_color_mask[0],old_color_mask[1],old_color_mask[2],old_color_mask[3]);
+    if stencil_was_on { gles.Enable(gles2::STENCIL_TEST); }
 
     // The renderbuffer present is performed by us (the emulator), not by the
     // guest app. On a real iPhone OS device the equivalent work happens
@@ -1893,6 +1943,7 @@ thread_local! {
 // namespace does not justify sharing helper attachment/storage history.
 #[derive(Default)]
 struct TransferState {
+    fog_probe: fog_probe::State,
     program: Option<PresentProgram>,
     objects: Option<PresentObjects>,
     source_renderbuffer: GLuint,
@@ -2247,7 +2298,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, renderbuffer: GLuint, this
     // glEnableClientState / glVertexPointer. Use a small dedicated
     // shader-based presenter instead.
     if gles.is_es2() {
-        present_renderbuffer_es2(gles, &mut transfer, viewport, rotation_matrix, virtual_cursor_visible_at);
+        present_renderbuffer_es2(gles, &mut transfer, &mut present_state.borrow_mut(), renderbuffer, viewport, rotation_matrix, virtual_cursor_visible_at);
         std::mem::drop(gles_boxed);
         env.window.as_ref().unwrap().swap_window();
         return;

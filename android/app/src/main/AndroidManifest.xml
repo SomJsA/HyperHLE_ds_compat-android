@@ -87,6 +87,7 @@
             android:exported="false"
             android:launchMode="singleInstance"
             android:process=":game"
+            android:screenOrientation="landscape"
             android:preferMinimalPostProcessing="true" />
 
         <provider
