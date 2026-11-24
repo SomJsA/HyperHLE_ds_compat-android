@@ -81,6 +81,8 @@ pub mod present;
 pub(crate) mod present_attrib;
 mod present_effects;
 pub(crate) mod ds_color_probe;
+mod pvrtc_disk_cache;
+pub(crate) use pvrtc_disk_cache::maintain_existing as maintain_pvrtc_disk_cache;
 pub(crate) mod util;
 use touchHLE_gl_bindings::gl21compat as gl21compat_raw;
 use touchHLE_gl_bindings::gl33core as gl33core_raw;

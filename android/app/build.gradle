@@ -104,6 +104,7 @@ android {
                 icon: join('@drawable/icon', '_', branding.toLowerCase())
         ]
         buildConfigField 'int', 'APP_ICON', join('R.drawable.icon', '_', branding.toLowerCase())
+        versionCode 2
         versionName join(getTouchHLEVersionName(), ' ', branding) + (touchHleReleaseTag ? '-' + touchHleReleaseTag : '')
 
         minSdkVersion 21 // first version with AArch64

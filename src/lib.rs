@@ -351,6 +351,9 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     };
 
     let app_id = bundle.bundle_identifier();
+    if app_id.starts_with("com.ea.deadspace.") {
+        gles::maintain_pvrtc_disk_cache();
+    }
 
     // Android cannot rely on the desktop wrapper's environment. Apply the
     // validated Dead Space defaults here while leaving every value overridable

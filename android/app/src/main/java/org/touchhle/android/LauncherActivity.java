@@ -197,7 +197,16 @@ public class LauncherActivity extends Activity {
         boolean freshInstall = prefs.getAll().isEmpty();
         LauncherLanguage.initialize(this);
         HdTextLanguage.initialize(this);
-        try { RuntimeStorage.initialize(this); }
+        try {
+            File root = RuntimeStorage.initialize(this);
+            new Thread(() -> {
+                try {
+                    BundledTextureStore.prunePending(root);
+                } catch (IOException error) {
+                    android.util.Log.w("touchHLE", "HD texture staging cleanup deferred", error);
+                }
+            }, "hd-texture-maintenance").start();
+        }
         catch (IOException error) { new AlertDialog.Builder(this).setTitle(L("资料位置无法使用")).setMessage(error.getMessage()).setPositiveButton(L("查看设置"),null).show(); }
         freshInstall = freshInstall && !prefs.contains(KEY_SCALE) && !prefs.contains(KEY_PRESET);
         scaleHack = prefs.getInt(KEY_SCALE, LaunchReview.recommendedScale(this, BuildConfig.BUNDLED_TEXTURES ? 8 : 3));
