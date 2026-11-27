@@ -71,6 +71,37 @@ use std::num::NonZeroU32;
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "android")]
+#[path = "ds_android_gamepad.rs"]
+mod ds_android_gamepad;
+
+#[cfg(target_os = "android")]
+const ANDROID_PAD_BUTTONS: [sdl2::controller::Button; ds_android_gamepad::BUTTONS.len()] = {
+    use sdl2::controller::Button::*;
+    [A, B, X, Y, LeftShoulder, RightShoulder, Start, Back, LeftStick, RightStick]
+};
+
+#[cfg(target_os = "android")]
+fn android_pad_bindings() -> &'static ds_android_gamepad::Bindings {
+    static BINDINGS: std::sync::OnceLock<ds_android_gamepad::Bindings> = std::sync::OnceLock::new();
+    BINDINGS.get_or_init(|| {
+        ds_android_gamepad::Bindings::parse(
+            &std::env::var("TOUCHHLE_DS_ANDROID_GAMEPAD").unwrap_or_default(),
+        ).unwrap_or_else(|| {
+            log!("[DSpad] Invalid Android bindings; using defaults");
+            ds_android_gamepad::Bindings::parse("").unwrap()
+        })
+    })
+}
+
+#[cfg(target_os = "android")]
+fn map_android_pad_button(button: sdl2::controller::Button) -> Option<sdl2::controller::Button> {
+    let Some(physical) = ANDROID_PAD_BUTTONS.iter().position(|&item| item == button) else {
+        return Some(button);
+    };
+    android_pad_bindings().action_for(physical).map(|action| ANDROID_PAD_BUTTONS[action])
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DeviceFamily {
@@ -485,6 +516,7 @@ pub enum FingerId {
 }
 pub type Coords = (f32, f32);
 
+#[derive(Default)]
 struct DpadState {
     left: bool,
     right: bool,
@@ -1108,6 +1140,8 @@ pub struct Window {
     controller_rt_down: bool,
     controller_rb_down: bool,
     controller_look_pending: bool,
+    #[cfg(target_os = "android")]
+    controller_look_sampled: Instant,
     /// Keyboard-driven virtual stick (WASD / arrow keys). Games that only
     /// understand a virtual analogue stick (Dead Space) are otherwise
     /// unplayable without a gamepad.
@@ -1217,6 +1251,12 @@ impl Window {
     }
 
     fn ds_cursor_mode_active(&self) -> bool {
+        if cfg!(target_os = "android") {
+            return !self.controllers.is_empty()
+                && self.ds_gamepad_cursor_mode
+                && !self.ds_capture_suspended
+                && !self.backgrounded;
+        }
         !self.controllers.is_empty()
             && (self.ds_gamepad_cursor_mode
                 || self.ds_look_forced_off
@@ -1487,6 +1527,8 @@ impl Window {
             controller_rt_down: false,
             controller_rb_down: false,
             controller_look_pending: false,
+            #[cfg(target_os = "android")]
+            controller_look_sampled: Instant::now(),
             key_stick: (0.0, 0.0),
             key_stick_last: (0.0, 0.0),
             _sensor_ctx: sensor_ctx,
@@ -1678,6 +1720,28 @@ impl Window {
                 _ => None,
             }
         }
+        #[cfg(target_os = "android")]
+        fn release_android_pad_touches(window: &mut Window, options: &Options) {
+            let mut released = HashMap::new();
+            if let Some((x, y, w, h)) = options.stick_to_touch.filter(|_| window.stick_active) {
+                released.insert(FingerId::StickToTouch, transform_input_coords(
+                    window, (x + w * 0.5, y + h * 0.5), true,
+                ));
+            }
+            window.stick_active = false;
+            if let Some((x, y, w, h)) = options.dpad_to_touch.filter(|_| window.dpad_state.active) {
+                released.insert(FingerId::DpadToTouch, transform_input_coords(
+                    window, (x + w * 0.5, y + h * 0.5), true,
+                ));
+            }
+            window.dpad_state = Default::default();
+            if let Some((x, y, true, _)) = window.virtual_cursor_last.take() {
+                released.insert(FingerId::VirtualCursor, transform_input_coords(window, (x, y), false));
+            }
+            if !released.is_empty() {
+                window.event_queue.push_back(Event::TouchesUp(released));
+            }
+        }
         fn finger_absolute_coords(window: &Window, (x, y): (f32, f32)) -> (f32, f32) {
             let (screen_width, screen_height) = window.window.drawable_size();
             (screen_width as f32 * x, screen_height as f32 * y)
@@ -1744,6 +1808,23 @@ impl Window {
                 }
             }
         }
+        #[cfg(target_os = "android")]
+        {
+            let elapsed = self.controller_look_sampled.elapsed().as_secs_f32().min(1.0 / 30.0);
+            self.controller_look_sampled = Instant::now();
+            if !self.controllers.is_empty() && !self.ds_gamepad_cursor_mode
+                && !self.ds_capture_suspended && !self.backgrounded
+            {
+                // A held stick keeps turning even if Android stops sending motion events.
+                let (x, y, _) = self.get_controller_stick(options, false);
+                if x != 0.0 || y != 0.0 {
+                    self.ds_look_accum.0 += x * elapsed * 1080.0;
+                    self.ds_look_accum.1 += y * elapsed * 1080.0;
+                    self.controller_look_pending = true;
+                }
+            }
+        }
+
         // Relative-mouse look (once per frame, before the script queue is drained):
         // turn the deltas accumulated since the last frame into ONE look drag.
         {
@@ -2067,6 +2148,8 @@ impl Window {
                         && ds_look_mode() != DsLookMode::Off;
                     self.ds_alt_released = false;
                     self.ds_capture_suspended = true;
+                    #[cfg(target_os = "android")]
+                    release_android_pad_touches(self, options);
                     if self.controller_lt_down {
                         crate::window::DS_AIM_REQUEST
                             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2337,18 +2420,36 @@ impl Window {
                     continue;
                 }
                 E::ControllerDeviceRemoved { which, .. } => {
-                    self.controller_removed(which);
+                    if self.controller_removed(which) && cfg!(target_os = "android") {
+                        #[cfg(target_os = "android")]
+                        release_android_pad_touches(self, options);
+                        self.release_controller_combat();
+                        self.ds_look_accum = (0.0, 0.0);
+                        self.controller_look_pending = false;
+                        if self.controllers.is_empty() {
+                            self.ds_gamepad_cursor_mode = false;
+                        }
+                        controller_updated = true;
+                    }
                     continue;
                 }
-                // Note that accelerometer simulation with analog sticks is
-                // handled with polling, rather than being event-based.
-                E::ControllerButtonUp { button, .. } | E::ControllerButtonDown { button, .. } => {
+                E::ControllerButtonUp { button, which, .. }
+                | E::ControllerButtonDown { button, which, .. } => {
+                    if cfg!(target_os = "android") && (self.ds_capture_suspended
+                        || !self.controllers.iter().any(|pad| pad.instance_id() == which))
+                    {
+                        continue;
+                    }
+                    #[cfg(target_os = "android")]
+                    let Some(button) = map_android_pad_button(button) else { continue; };
                     controller_updated = true;
                     let semantic_down = matches!(event, E::ControllerButtonDown { .. });
                     if button == sdl2::controller::Button::Start {
                         if semantic_down {
                             self.ds_gamepad_cursor_mode = !self.ds_gamepad_cursor_mode;
                             if self.ds_gamepad_cursor_mode {
+                                #[cfg(target_os = "android")]
+                                release_android_pad_touches(self, options);
                                 if self.controller_lt_down {
                                     crate::window::DS_AIM_REQUEST
                                         .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2777,13 +2878,19 @@ impl Window {
                         continue;
                     }
                 }
-                E::ControllerAxisMotion { axis, value, .. } => {
+                E::ControllerAxisMotion { axis, value, which, .. } => {
+                    if cfg!(target_os = "android") && (self.ds_capture_suspended
+                        || !self.controllers.iter().any(|pad| pad.instance_id() == which))
+                    {
+                        continue;
+                    }
                     controller_updated = true;
                     let norm = (value as f32 / 32768.0).clamp(-1.0, 1.0);
                     if axis == sdl2::controller::Axis::RightX
                         || axis == sdl2::controller::Axis::RightY
                     {
-                        if self.ds_cursor_mode_active() {
+                        if cfg!(target_os = "android") || self.ds_cursor_mode_active() {
+                            // Android samples the held stick once per frame.
                             // In cursor mode right stick owns the pointer only;
                             // it must not also enqueue a camera-look gesture.
                             continue;
@@ -2853,6 +2960,9 @@ impl Window {
                     let Some((x, y, w, h)) = options.stick_to_touch else {
                         continue;
                     };
+                    if cfg!(target_os = "android") && self.ds_gamepad_cursor_mode {
+                        continue;
+                    }
                     if axis == sdl2::controller::Axis::LeftX
                         || axis == sdl2::controller::Axis::LeftY
                     {
@@ -2887,6 +2997,13 @@ impl Window {
                     }
                 }
                 E::AppWillEnterBackground { .. } => {
+                    #[cfg(target_os = "android")]
+                    {
+                        release_android_pad_touches(self, options);
+                        self.release_controller_combat();
+                        self.ds_look_accum = (0.0, 0.0);
+                        self.controller_look_pending = false;
+                    }
                     #[cfg(target_os = "android")]
                     if let Some(actor)=self.render_actor.get(){actor.suspend().expect("Render owner background parking");}
                     log!("Received app-will-resign-active event.");
@@ -3466,6 +3583,14 @@ impl Window {
                     self.backgrounded = false;
                     self.high_priority_event = Some(Event::AppDidBecomeActive);
                 }
+                #[cfg(target_os = "android")]
+                Some(E::ControllerDeviceAdded { which, .. }) => self.controller_added(which),
+                #[cfg(target_os = "android")]
+                Some(E::ControllerDeviceRemoved { which, .. }) => {
+                    if self.controller_removed(which) && self.controllers.is_empty() {
+                        self.ds_gamepad_cursor_mode = false;
+                    }
+                }
                 Some(E::AppTerminating { .. }) => {
                     log!("Received app-will-terminate event while backgrounded.");
                     self.high_priority_event = Some(Event::AppWillTerminate);
@@ -3614,18 +3739,38 @@ impl Window {
             "New controller connected: {}. Left stick = device tilt. Right stick = touch input (press the stick or shoulder button to tap/hold).",
             controller_name
         );
+        if self.controllers.iter().any(|pad| pad.instance_id() == controller.instance_id()) {
+            return;
+        }
         self.controllers.push(controller);
     }
-    fn controller_removed(&mut self, instance_id: u32) {
+
+    fn release_controller_combat(&mut self) {
+        use std::sync::atomic::Ordering;
+        if self.controller_lt_down {
+            self.ds_aim_active = false;
+            DS_AIM_REQUEST.store(0, Ordering::Relaxed);
+        }
+        if self.controller_rt_down || self.controller_rb_down {
+            DS_FIRE_MODE_REQUEST.store(0, Ordering::Relaxed);
+            DS_FIRE_RELEASE_REQUEST.store(true, Ordering::Relaxed);
+        }
+        self.controller_lt_down = false;
+        self.controller_rt_down = false;
+        self.controller_rb_down = false;
+    }
+
+    fn controller_removed(&mut self, instance_id: u32) -> bool {
         let Some(idx) = self
             .controllers
             .iter()
             .position(|controller| controller.instance_id() == instance_id)
         else {
-            return;
+            return false;
         };
         let controller = self.controllers.remove(idx);
         log!("Warning: Controller disconnected: {}", controller.name());
+        true
     }
     pub fn print_accelerometer_notice(&self, options: &Options) {
         log!("This app uses the accelerometer.");
@@ -3799,7 +3944,11 @@ impl Window {
     /// and whether the cursor moved.
     fn update_virtual_cursor(&mut self, options: &Options) -> (f32, f32, bool, bool, bool) {
         // Get right analog stick input. The range is [-1, 1] on each axis.
-        let (x, y, pressed) = self.get_controller_stick(options, false);
+        let (x, y, pressed) = if cfg!(target_os = "android") && !self.ds_cursor_mode_active() {
+            (0.0, 0.0, false)
+        } else {
+            self.get_controller_stick(options, false)
+        };
 
         // The cursor is intended to only show up once you move the analog stick
         // out of its deadzone, or while the button is held.
@@ -3909,6 +4058,11 @@ impl Window {
             };
             x += convert_axis(controller.axis(x_axis), options.deadzone);
             y += convert_axis(controller.axis(y_axis), options.deadzone);
+            #[cfg(target_os = "android")]
+            if !left {
+                pressed |= controller.button(ANDROID_PAD_BUTTONS[android_pad_bindings().interact_button()]);
+                continue;
+            }
             pressed |= controller.button(button1);
             pressed |= controller.button(button2);
         }

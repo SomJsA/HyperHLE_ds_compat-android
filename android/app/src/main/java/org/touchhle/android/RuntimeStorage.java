@@ -136,7 +136,7 @@ final class RuntimeStorage {
     }
     private static boolean portablePreference(String key) {
         return !MODE.equals(key) && !ROOT.equals(key) && !"ui_language".equals(key) && !HdTextLanguage.KEY.equals(key) && !LaunchReview.REVIEWED.equals(key)
-                && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
+                && !GamepadBindings.KEY.equals(key) && !key.startsWith("hardware_") && !key.startsWith("benchmark_");
     }
     private static char preferenceType(String key) {
         if ("quality_preset".equals(key)||SaveNodeMonitor.KEY_SESSION.equals(key))return 's';

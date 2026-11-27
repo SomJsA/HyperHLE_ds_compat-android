@@ -717,6 +717,8 @@ public class LauncherActivity extends Activity {
             public void onStopTrackingTouch(SeekBar seekBar) { saveCurrentSettings(); }
         });
 
+        addGamepadSettings(qualityBlock);
+
         advancedButton = button(L("高级参数：展开（自定义）   ›"), false);
         advancedButton.setOnClickListener(v -> {
             advancedExpanded = !advancedExpanded;
@@ -1347,6 +1349,85 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    private void addGamepadSettings(LinearLayout parent) {
+        addSection(parent, LauncherLanguage.text("手柄", "Gamepad"));
+        Button configure = button(LauncherLanguage.text("按键映射", "Button mapping"), false);
+        configure.setOnClickListener(view -> showGamepadBindings());
+        parent.addView(configure, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+    }
+
+    private void showGamepadBindings() {
+        int[] mapping = GamepadBindings.parse(prefs.getString(GamepadBindings.KEY, null));
+        String[] actionLabels = LauncherLanguage.english()
+                ? new String[]{"Interact / QTE", "Kinesis", "Reload", "Stasis", "Melee / Stomp",
+                        "Primary fire while aiming", "Cursor mode", "Pause / Resume"}
+                : new String[]{"交互 / 挣脱", "念力", "装弹", "静滞", "近战 / 踩踏",
+                        "瞄准时主射击", "光标模式", "暂停 / 继续"};
+        String[] buttonLabels = {"A", "B", "X", "Y", "LB", "RB", "Start", "Select / Back", "L3", "R3"};
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        rows.setPadding(dp(20), dp(6), dp(20), dp(12));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(rows);
+        StringBuilder devices = new StringBuilder();
+        for (int id : android.view.InputDevice.getDeviceIds()) {
+            android.view.InputDevice device = android.view.InputDevice.getDevice(id);
+            if (GamepadInput.isGamepad(device)) {
+                if (devices.length() > 0) devices.append(" · ");
+                devices.append(device.getName());
+            }
+        }
+        rows.addView(text(devices.length() == 0
+                ? LauncherLanguage.text("请通过 USB 或系统蓝牙设置连接手柄。", "Connect a USB gamepad or pair one in Android settings.")
+                : devices.toString(), 14, COLOR_ACCENT, true));
+        rows.addView(text(LauncherLanguage.text(
+                "更改键位时自动交换已占用的按钮。左摇杆 / 十字键移动，右摇杆转视角或移动光标。LT 瞄准，RT 副射击。",
+                "Occupied buttons swap automatically. Move with the left stick or D-pad, look or move the cursor with the right stick. LT aims and RT fires the secondary mode."),
+                13, COLOR_TEXT, false));
+
+        Button[] buttons = new Button[mapping.length];
+        Runnable describe = () -> {
+            for (int i = 0; i < buttons.length; i++)
+                buttons[i].setText(actionLabels[i] + "  ·  " + buttonLabels[mapping[i]]);
+        };
+        for (int i = 0; i < buttons.length; i++) {
+            final int action = i;
+            buttons[i] = button("", false);
+            buttons[i].setOnClickListener(view -> new AlertDialog.Builder(this)
+                    .setTitle(actionLabels[action])
+                    .setSingleChoiceItems(buttonLabels, mapping[action], (dialog, choice) -> {
+                        GamepadBindings.assign(mapping, action, choice);
+                        describe.run();
+                        dialog.dismiss();
+                    })
+                    .setNegativeButton(L("取消"), null).show());
+            rows.addView(buttons[i], new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
+        }
+        describe.run();
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(LauncherLanguage.text("手柄按键映射", "Gamepad button mapping"))
+                .setView(scroll)
+                .setNegativeButton(L("取消"), null)
+                .setNeutralButton(LauncherLanguage.text("恢复默认", "Reset"), null)
+                .setPositiveButton(LauncherLanguage.text("保存", "Save"), null).create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+            int[] defaults = GamepadBindings.defaults();
+            System.arraycopy(defaults, 0, mapping, 0, mapping.length);
+            describe.run();
+        });
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            if (prefs.edit().putString(GamepadBindings.KEY, GamepadBindings.serialize(mapping)).commit()) {
+                dialog.dismiss();
+            } else {
+                Toast.makeText(this, LauncherLanguage.text("手柄键位保存失败。", "Could not save gamepad bindings."),
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     private void updateTiltPulseUi() {
         if (tiltThresholdValue != null) {
             tiltThresholdValue.setText(String.format(java.util.Locale.US, "%.3f G", tiltPulseThresholdMilliG / 1000.0));
@@ -1734,6 +1815,7 @@ public class LauncherActivity extends Activity {
         intent.putExtra("present_sharpen", sharpen);
         intent.putExtra("safe_black_floor", safeBlackFloor);
         intent.putExtra("safe_black_gray", safeBlackGray);
+        intent.putExtra(GamepadBindings.KEY, prefs.getString(GamepadBindings.KEY, ""));
         intent.putExtra("tilt_pulse", tiltPulseEnabled);
         intent.putExtra("tilt_threshold_mg", tiltPulseThresholdMilliG);
         intent.putExtra("tilt_cooldown_ms", tiltPulseCooldownMs);

@@ -40,6 +40,7 @@ import android.widget.LinearLayout;
 import android.graphics.Bitmap;
 import android.view.PixelCopy;
 
+import org.libsdl.app.DeadSpaceControllerManager;
 import org.libsdl.app.SDLActivity;
 
 import java.io.File;
@@ -78,6 +79,14 @@ public class MainActivity extends SDLActivity {
     private int stableLandscapeSide = -1;
     private AlertDialog pauseDialog;
     private boolean manualPause;
+    private int pendingGamepadPauseDevice = Integer.MIN_VALUE;
+    private int pendingGamepadPauseKey = KeyEvent.KEYCODE_UNKNOWN;
+    private int pauseGamepadButton;
+
+    private void clearPendingGamepadPause() {
+        pendingGamepadPauseDevice = Integer.MIN_VALUE;
+        pendingGamepadPauseKey = KeyEvent.KEYCODE_UNKNOWN;
+    }
     private boolean activityResumed;
     private ChapterOverlayView chapterOverlay;
     private SaveNodeMonitor saveNodeMonitor;
@@ -97,6 +106,8 @@ public class MainActivity extends SDLActivity {
                     getIntent().getStringExtra(SaveNodeMonitor.KEY_SESSION), pictures ? this::captureSaveNodePicture : null);
             saveNodeMonitor.start();
         }
+        pauseGamepadButton = GamepadBindings.parse(
+                getIntent().getStringExtra(GamepadBindings.KEY))[7];
         super.onCreate(savedInstanceState);
         lockCurrentLandscapeSide();
         showFps = getIntent().getBooleanExtra("show_fps", true);
@@ -143,6 +154,7 @@ public class MainActivity extends SDLActivity {
     @Override
     protected void onPause() {
         activityResumed=false;
+        clearPendingGamepadPause();
         rotationObservation++;
         stableLandscapeSide = -1;
         pendingLandscapeSide = -1;
@@ -274,6 +286,17 @@ public class MainActivity extends SDLActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        int button = GamepadInput.button(event);
+        if (handleGamepadPause(event, button) || DeadSpaceControllerManager.handleTriggerKey(event)) return true;
+        if (button >= 0 && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            // A remapped Select/Back pad button belongs to SDL, not Android navigation.
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                org.libsdl.app.SDLControllerManager.onNativePadDown(event.getDeviceId(), event.getKeyCode());
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                org.libsdl.app.SDLControllerManager.onNativePadUp(event.getDeviceId(), event.getKeyCode());
+            }
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
             if (event.getAction() == KeyEvent.ACTION_UP
                     && event.getRepeatCount() == 0) {
@@ -282,6 +305,20 @@ public class MainActivity extends SDLActivity {
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    private boolean handleGamepadPause(KeyEvent event, int button) {
+        if (button != pauseGamepadButton) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            pendingGamepadPauseDevice = event.getDeviceId();
+            pendingGamepadPauseKey = event.getKeyCode();
+        } else if (event.getAction() == KeyEvent.ACTION_UP
+                && pendingGamepadPauseDevice == event.getDeviceId()
+                && pendingGamepadPauseKey == event.getKeyCode()) {
+            clearPendingGamepadPause();
+            if (!event.isCanceled()) onBackPressed();
+        }
+        return true;
     }
 
     private void pauseForMenu() {
@@ -418,6 +455,8 @@ public class MainActivity extends SDLActivity {
                 pauseDialog = null;
             }
         });
+        dialog.setOnKeyListener((window, code, event) ->
+                handleGamepadPause(event, GamepadInput.button(event)));
         dialog.setCanceledOnTouchOutside(false);
         dialog.show();
     }
@@ -514,6 +553,7 @@ public class MainActivity extends SDLActivity {
      */
     @Override
     protected String[] getArguments() {
+        DeadSpaceControllerManager.install();
         try {RuntimeStorage.checkConfiguration(this);}
         catch(IOException error){runOnUiThread(()->{Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();finish();});return new String[]{"--help"};}
         try {
@@ -588,6 +628,10 @@ public class MainActivity extends SDLActivity {
                 // language after a launcher choice.
                 args.add("--preferred-languages=" + HdTextLanguage.preferredLanguages());
                 args.add("--scale-hack=" + scale);
+                // Share the PC movement region in original landscape guest points.
+                args.add("--stick-to-touch=30,190,120,110");
+                args.add("--dpad-to-touch=30,190,120,110");
+                args.add("--disable-analog-stick-tilt-controls");
                 args.add(fpsCap == 0 ? "--fps-limit=off" : "--fps-limit=" + fpsCap);
                 if (debugLogs) {
                     args.add("--print-fps");
@@ -666,6 +710,8 @@ public class MainActivity extends SDLActivity {
             boolean fsr3GpuDepth, boolean fsr3Async, boolean fsr3DirectOutput,
             boolean fsr3DiagReadback, boolean fsr3Trace, boolean fsr3Force,
             boolean fsr3FgSynthetic, boolean fsr3FgProbe, File bundledTextureDir) {
+        setEnv("TOUCHHLE_DS_ANDROID_GAMEPAD", GamepadBindings.serialize(
+                GamepadBindings.parse(getIntent().getStringExtra(GamepadBindings.KEY))));
         setEnv("TOUCHHLE_DS_NATIVE_EFFECTS",getIntent().getBooleanExtra("advanced_lighting",
                 LaunchReview.lighting(getSharedPreferences(LauncherActivity.PREFS,MODE_PRIVATE))) ? "1" : "0");
         File base = getExternalFilesDir(null);
